@@ -1,0 +1,357 @@
+---
+title: "快取深度指南"
+description: "從原理到實踐,把 FurCDN 快取調到極致。"
+---
+從原理到實踐,把 FurCDN 快取調到極致。
+
+> **TL;DR** 三條黃金原則:
+> 1. **靜態資源設長 TTL + 配合版本號**,讓使用者永遠拿快取
+> 2. **HTML 設短 TTL**,兼顧更新即時性
+> 3. **API 不快取**(TTL=0),動態內容必須回源
+
+---
+
+## 一、兩級快取原理
+
+### L1:記憶體(In-Memory)
+
+- 小檔(`<8 MiB`)優先存記憶體
+- LRU 淘汰
+- 命中速度 `<1ms`
+- 節點重啟即清空
+
+### L2:磁碟(Disk)
+
+- 大檔或 L1 miss 時落盤
+- 單域名 / 單節點都有上限(`maxCacheSizeGbPerDomain` × `maxDiskCacheGb`)
+- 命中速度 ~5ms
+- 重啟保留(persist via `persist.go`)
+
+### 命中流程
+
+```
+請求進來
+  ↓
+WAF 評估 (allow/block/challenge)
+  ↓
+查 L1 → 命中?→ 是,X-Cache: HIT-L1 直接返回
+              ↓ 否
+查 L2 → 命中?→ 是,X-Cache: HIT-L2 + 寫入 L1 → 返回
+              ↓ 否
+回源 → X-Cache: MISS,寫 L1+L2 → 返回
+```
+
+### Response Headers
+
+每個回應都會帶:
+
+| Header | 含義 |
+|---|---|
+| `X-Cache: HIT-L1` | 命中記憶體 |
+| `X-Cache: HIT-L2` | 命中磁碟 |
+| `X-Cache: MISS` | 未命中,剛從源站回 |
+| `X-Cache: BYPASS` | 命中但配置不快取(TTL=0) |
+| `X-Cache-Node: <name>` | 哪個節點服務了這個請求 |
+| `X-Cache-Age: <秒>` | 已快取多久 |
+| `X-Cache-Key: <hash>` | 本次的快取鍵 hash(debug 用) |
+
+---
+
+## 二、預設規則
+
+新建域名時自動產生 3 條:
+
+| 規則 | 匹配 | TTL | 用途 |
+|---|---|---|---|
+| 靜態資源 | extension `jpg,jpeg,png,gif,webp,svg,ico,css,js,woff,woff2,ttf,eot,mp4,webm,mp3` | 7 天(604800s) | 圖片/CSS/JS/字體/視訊不常變,長 TTL |
+| HTML 頁面 | extension `html,htm` | 5 分鐘(300s) | 兼顧更新即時性 |
+| API 不快取 | path `/api/` | 0 秒 | 動態 API 必須回源 |
+
+> 預設規則**可改可刪**,但建議至少保留「API 不快取」這條,否則動態內容會被誤快取。
+
+---
+
+## 三、規則參數詳解
+
+### `matchType` + `matchValue`
+
+| matchType | matchValue 格式 | 範例 |
+|---|---|---|
+| `extension` | 副檔名清單,逗號分隔 | `jpg,png,webp` |
+| `path` | 路徑前綴(以 `/` 開頭) | `/static/`、`/api/v2/` |
+
+> `extension` 取 URL 路徑最後一個 `.` 之後的部分(不含 query)。如 `/img/cat.jpg?v=2` → 副檔名 `jpg`。
+
+### `ttl`(秒)
+
+| 值 | 行為 |
+|---|---|
+| `> 0` | 快取 N 秒 |
+| `0` | **不快取**(每次都回源) |
+| `< 0` | 視為 0(等同不快取) |
+
+> 沒有「永久快取」,最大實用值是幾年(例如 31536000s = 1 年)。
+
+### `cacheControl`(可選)
+
+自訂回應的 `Cache-Control` header,**覆寫源站**:
+
+| 值 | 含義 |
+|---|---|
+| `public, max-age=86400` | 公開快取 1 天 |
+| `private, max-age=300` | 只允許瀏覽器快取 5 分鐘(CDN 中間層別存) |
+| `no-store` | 任何端都不快取(等同 TTL=0) |
+| `s-maxage=3600, max-age=60` | CDN 快 1 小時,瀏覽器快 1 分鐘 |
+
+留空 = 透傳源站的 Cache-Control(若源站沒設,瀏覽器自行決定)。
+
+### `priority`
+
+數字小的優先匹配。預設 10。
+
+範例:你想 `/static/special.css` 用 1 小時 TTL,其他 `/static/*` 用 7 天:
+
+```
+規則 A: priority=5,  path=/static/special.css, ttl=3600
+規則 B: priority=10, extension=css, ttl=604800
+```
+
+### `enabled`
+
+`false` 視為規則不存在。臨時關閉某條規則 debug 時很有用。
+
+---
+
+## 四、快取鍵設定
+
+### 預設快取鍵
+
+```
+SHA256(method + host + uri + query + cacheKeyHeaders 們的值)
+```
+
+兩個請求的快取鍵相同 → 共用一份快取。
+
+### `ignoreQueryString`(域名級)
+
+開啟後 query 不入鍵:
+
+| URL | 預設 | ignoreQueryString=true |
+|---|---|---|
+| `/page` | key A | key A |
+| `/page?v=1` | key B | **key A**(同上) |
+| `/page?v=2` | key C | **key A**(同上) |
+
+**最佳場景**:版本號破快取(`/style.css?v=20240101`)。資源實際不變,只是 query 換,共用一份節省空間。
+
+**反例**:搜尋頁 `/search?q=apple` 跟 `/search?q=banana` 結果不同,**不能**忽略 query,否則所有人看到同一份。
+
+### `cacheKeyHeaders`(域名級)
+
+陣列,加入快取鍵的 HTTP header 名稱列表:
+
+```json
+["Accept-Language", "X-Device-Type"]
+```
+
+效果:不同 header 值快取為**獨立副本**。
+
+最佳場景:多語言網站根據 `Accept-Language` 返回不同語言 → 不同語言獨立快取。
+
+| 請求 | 快取鍵 |
+|---|---|
+| `/page` + `Accept-Language: zh-TW` | key_zhTW |
+| `/page` + `Accept-Language: en-US` | key_enUS |
+| `/page` + `Accept-Language: ja-JP` | key_jaJP |
+
+### 快取爆炸警告
+
+| 場景 | 後果 |
+|---|---|
+| `cacheKeyHeaders` 加 `User-Agent` | UA 變化萬千 → 每個 UA 一份 → **快取空間爆炸** |
+| `cacheKeyHeaders` 加 `Cookie` | 每個 session 一份 → 同樣爆炸 |
+| 不設 `ignoreQueryString` 而源站亂帶時間戳 query | 每次請求 key 都不同 → 永遠 MISS |
+
+> Header 名稱**大小寫不敏感**,但**值大小寫敏感**。
+
+---
+
+## 五、源站 `Cache-Control` 互動
+
+### 源站 header 影響
+
+源站回的 header 影響 FurCDN 怎麼快取:
+
+| 源站 Cache-Control | FurCDN 行為 |
+|---|---|
+| `public, max-age=3600` | 快取 1 小時(以源站為準,除非規則覆寫) |
+| `private` | **不快取**(個人資料,不應在 CDN) |
+| `no-store` | **不快取** |
+| `no-cache` | 允許快取但每次回源 revalidate(目前簡化處理:仍按 TTL 快取) |
+| `s-maxage=600, max-age=60` | CDN 快 10 分鐘(`s-maxage` 給共享快取) |
+
+### 規則 vs 源站 優先級
+
+```
+1. 規則 ttl > 0   → 強制用規則的 TTL,完全覆寫源站
+2. 規則 ttl = 0   → 強制不快取(BYPASS),源站 Cache-Control 無效
+3. 沒規則匹配     → 看域名 cacheTime(預設快取時間)
+4. cacheTime = 0  → 看源站 Cache-Control,源站沒設則不快取
+```
+
+實踐:**寫規則時要意識到完全覆寫源站**。如果源站的快取策略你信得過,可以不寫規則讓它生效。
+
+---
+
+## 六、立即刷新
+
+### 觸發
+
+域名編輯 > **「立即刷新快取」按鈕**。
+
+### 機制
+
+1. master 透過 SSE(Server-Sent Events)即時廣播給所有服務該域名的節點
+2. 每個節點同時清:
+   - L1 全部該域名的記憶體 entry
+   - L2 全部該域名的磁碟 entry(`<cache_dir>/<domain_hash>/*`)
+3. 通常 `<1 秒` 生效
+
+### 限制
+
+- 是**全域名 purge**,不能精確到單一 URL(實作簡單可靠優先)
+- 並非透過 HTTP API 觸發,所以節點離線時這條 purge 也丟失(節點上線後會重新拉 config,但**舊 cache 不會被清**)
+- 開放 API:`POST /api/v1/domains/{id}/purge`(等同前端按鈕)
+
+### 不要過度刷新
+
+- 每次刷新後該域名所有節點全部 MISS,源站瞬時負載 ↑
+- 高 QPS 站點頻繁刷新會把源站打掛
+- 真要頻繁更新建議改 TTL 短一點,而不是手動刷新
+
+---
+
+## 七、最佳實踐配方
+
+### 1. 靜態網站(全部資源穩定)
+
+```
+規則 A: extension=html,htm                ttl=300       priority=10
+規則 B: extension=css,js                   ttl=2592000   priority=10  (30 天)
+規則 C: extension=jpg,png,webp,svg,ico    ttl=2592000   priority=10
+```
+
+配合源站使用版本號(`style.css?v=2`)+ 域名級 `ignoreQueryString=true` 即可隨時破快取。
+
+### 2. SPA(Single Page App)
+
+```
+規則 A: path=/                            ttl=300        priority=10  # index.html 短 TTL
+規則 B: path=/static/                     ttl=2592000   priority=10  # 構建產物用 hash filename
+規則 C: path=/api/                        ttl=0         priority=5
+```
+
+SPA 的 `index.html` 必須短 TTL,否則部署新版後使用者一直看舊頁。
+
+### 3. WordPress / 動態 CMS
+
+```
+規則 A: path=/wp-admin/                  ttl=0       priority=1
+規則 B: path=/wp-login.php               ttl=0       priority=1
+規則 C: extension=php                     ttl=0       priority=5
+規則 D: extension=jpg,png,webp,svg,ico   ttl=604800  priority=10
+規則 E: extension=css,js                  ttl=86400   priority=10
+```
+
+PHP 全部不快取(管理頁尤其關鍵)。靜態資源長 TTL。
+
+### 4. OSS 圖床
+
+```
+規則 A: extension=*(全副檔名)             ttl=2592000   priority=10
+ignoreQueryString=true
+```
+
+OSS 內容不變,**極長 TTL**。配合 `presigned URL` 流量可以做到 99% 命中率。
+
+### 5. 即時新聞
+
+```
+規則 A: path=/                            ttl=60       priority=10  # 首頁 1 分鐘
+規則 B: path=/news/                       ttl=600      priority=10  # 文章 10 分鐘
+規則 C: extension=jpg,png,webp           ttl=86400    priority=10
+規則 D: path=/api/                        ttl=0        priority=5
+```
+
+兼顧即時性 + 性能。配合「立即刷新」應對重大新聞需要立刻更新的場景。
+
+### 6. 多語言網站
+
+```
+規則 A: extension=html                    ttl=300        priority=10
+cacheKeyHeaders=["Accept-Language"]
+```
+
+每種語言獨立快取,正確命中。
+
+---
+
+## 八、故障排查
+
+### 永遠 MISS,沒命中
+
+排查:
+
+1. **域名 cacheEnabled 開了嗎**?域名編輯 > 基本設定 > 快取開關
+2. **規則 enabled=true 嗎**?且 priority 沒被前面的 `ttl=0` 規則蓋掉?
+3. **源站 `Cache-Control: no-store` / `private`** 而你沒寫規則覆寫?寫規則 ttl > 0 強制快取
+4. **query 變化**:沒設 `ignoreQueryString` 而每次 query 都不同 → 每次 key 不同
+5. **`Vary: *`**:源站回了 `Vary: *` 表示「對所有 header 不同則不同副本」,等同不可快取
+
+### 快取了不該快取的內容
+
+例如使用者拿到了別人的個資頁面:
+
+1. **檢查 path**:該路徑有規則 ttl > 0 嗎?改成 0
+2. **檢查 cookie**:登入態頁面應該有 `Cache-Control: private`,如果你的源站沒設,加規則覆寫該 path 為 0
+3. **緊急刷快取**:點「立即刷新」清乾淨
+
+### 多語言頁面只看到一種語言
+
+- 沒設 `cacheKeyHeaders=["Accept-Language"]`
+- 第一個訪問的人是哪種語言,後面所有人都看到那種
+
+### 改了源站但 CDN 還是舊內容
+
+- TTL 還沒到 → 等 / 點「立即刷新」
+- 規則 cacheControl 設了長 max-age 也覆寫到 response,**用戶端瀏覽器**也快取了 → 改規則的 cacheControl,新請求才會拿短 max-age
+
+### 快取空間佔滿
+
+- 看「節點」頁面 `diskUsedGb` vs `maxDiskCacheGb`
+- 如果接近上限:LRU 自動淘汰,但若同一時間大量新內容寫入會擠壓熱資料
+- 解法:增大 `maxDiskCacheGb`(管理員設定),或減少域名數量分流到不同節點
+
+### 開了 ignoreQueryString 後 SEO 受影響?
+
+- 不會。SEO 看的是源站 + URL 結構,跟 CDN 快取鍵無關
+- 只要源站對相同 query 永遠返回同樣內容(典型靜態資源就是),`ignoreQueryString` 安全
+
+---
+
+## 九、進階:Cache-Control 透傳
+
+如果你的源站本身就有完整的快取策略(例如已經設好 `Cache-Control: public, max-age=86400, s-maxage=604800`),**不需要寫 FurCDN 規則**:
+
+1. 域名 `cacheEnabled=true`
+2. 域名 `cacheTime` 設一個合理 fallback(如 60 秒)
+3. **不寫任何 cacheRule**(或只寫 `path=/api/` ttl=0 排除 API)
+
+FurCDN 會直接讀源站的 `s-maxage`(優先) / `max-age`,完整尊重源站策略。
+
+優點:**單一事實來源**,改源站 header 即可即時生效,不需動 CDN 設定。
+
+---
+
+> 還是搞不定?**訪問日誌**裡每筆請求都有 `cache_status` 欄位,點開看細節:命中哪條規則、用了什麼快取鍵、源站 header 是什麼。
+

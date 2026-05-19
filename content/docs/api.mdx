@@ -1,0 +1,354 @@
+---
+title: "開放 API"
+description: "平台對外開放的 HTTP API,用於程式化控制 CDN(部署管線整合 / CI 自動刷快取 / 監控腳本等)。"
+---
+平台對外開放的 HTTP API,用於程式化控制 CDN(部署管線整合 / CI 自動刷快取 / 監控腳本等)。
+
+> **TL;DR**
+> - 鑑權走 `Authorization: Bearer fck_<full-secret>`
+> - 金鑰建立時**只回傳一次**,DB 只存 SHA-256 hash
+> - 限速與 dashboard 共用同一把(防繞)
+> - 端點以 `/api/v1/` 開頭
+
+---
+
+## 一、API 金鑰管理
+
+### 建立金鑰
+
+**儀表板 > API**:
+
+1. 點「新增金鑰」
+2. 填:
+   - **名稱**:顯示用,如「CI 部署機器」
+   - **過期時間**(選填):留空 = 永不過期
+3. 提交後彈窗顯示**完整金鑰**(僅此一次,務必複製保存)
+
+### 金鑰格式
+
+```
+fck_<8 hex prefix>_<24 hex secret>
+```
+
+- `fck_` 是固定前綴(FurCDN Key)
+- prefix 8 字元僅顯示用,讓你能識別「這是哪一把」
+- secret 24 字元是真正驗證用的部分
+- DB 只存 SHA-256(整把金鑰),前端只看得到 prefix
+
+### 列表頁顯示
+
+只看得到:
+
+- 名稱
+- prefix(`fck_xxxxxxxx`)
+- 建立時間 / 末次使用時間 / 過期時間
+
+完整金鑰**遺失就只能刪掉重建**。
+
+### 過期通知
+
+過期前 7 天系統會寄一封提醒信(`expiryNotified` 去重,只發一次)。
+
+### 刪除金鑰
+
+**刪除即立即失效**,任何用此金鑰的後續請求 401。
+
+---
+
+## 二、鑑權
+
+### 帶上 Bearer
+
+```http
+GET /api/v1/domains HTTP/1.1
+Host: www.furcdn.us
+Authorization: Bearer fck_a1b2c3d4_xxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+curl 範例:
+
+```bash
+curl -H "Authorization: Bearer fck_a1b2c3d4_xxxxxxxxxxxxxxxxxxxxxxxx" \
+     https://www.furcdn.us/api/v1/domains
+```
+
+### 驗證流程
+
+1. 取 `Authorization` header,剝 `Bearer ` 前綴
+2. SHA-256 hash 整把金鑰
+3. DB 查 `keyHash` 匹配
+4. 檢查 `expiresAt`(若有)是否過期
+5. 通過 → 返回對應 user(後續端點權限按該 user 檢查)
+6. 更新 `lastUsedAt`(每次呼叫)
+
+### 失敗回應
+
+| HTTP | 含義 |
+|---|---|
+| 401 | 沒帶金鑰 / 格式錯 / hash 對不上 |
+| 401 | 金鑰已過期 |
+| 403 | 金鑰合法但操作對象不屬於此 user(IDOR 防護) |
+| 429 | 限速觸發 |
+
+---
+
+## 三、端點清單
+
+### 列出我的域名
+
+```http
+GET /api/v1/domains
+Authorization: Bearer fck_xxx
+```
+
+返回:
+
+```json
+{
+  "domains": [
+    {"id": 1, "name": "example.com", "enabled": true},
+    {"id": 2, "name": "static.example.com", "enabled": true}
+  ]
+}
+```
+
+> 只列名稱與啟用狀態,不含敏感配置(origin / cert 等)。
+
+---
+
+### 刷新快取
+
+```http
+POST /api/v1/domains/{id}/purge
+Authorization: Bearer fck_xxx
+```
+
+廣播到該域名所屬叢集**所有在線節點**清 L1+L2 快取。等同 dashboard 的「立即刷新快取」按鈕。
+
+返回:
+
+```json
+{
+  "ok": true,
+  "total": 5,
+  "success": 5
+}
+```
+
+`total` = 應通知節點數;`success` = 實際成功節點數。
+
+**限速**:每 user 每 5 分鐘 10 次 + 每 IP 每 5 分鐘 30 次(與 dashboard 共用 key)。
+
+---
+
+### 上傳 SSL 憑證
+
+```http
+POST /api/v1/domains/{id}/ssl
+Authorization: Bearer fck_xxx
+Content-Type: application/json
+
+{
+  "cert": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----",
+  "key": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+}
+```
+
+校驗:
+
+- PEM 格式合法
+- 公私鑰相符
+- 未過期
+- CN/SAN 涵蓋本域名
+
+成功後**自動關閉自動續約**(`sslAutoRenew=false`),改為手動憑證。
+
+返回:
+
+```json
+{"ok": true}
+```
+
+---
+
+## 四、限速
+
+### 全域限速規則
+
+| 端點 | 限速 |
+|---|---|
+| `POST /api/v1/domains/{id}/purge` | 10/5min/user + 30/5min/IP |
+| `POST /api/v1/domains/{id}/ssl` | 6/h/user(防爆破) |
+| `GET /api/v1/*` | 600/min/user |
+
+### 為什麼跨入口共用 key
+
+`purge` 操作的限速 key 是 `purge:<userId>`,**dashboard 與 API 共用**:
+
+- 防止使用者透過 API 繞過 dashboard 的限速
+- 帳戶級別防濫用,而不是「按入口分流」
+
+---
+
+## 五、IDOR 防護
+
+每個操作前都驗證:
+
+```ts
+const d = await prisma.domain.findUnique({ where: { id } });
+if (!d || d.userId !== user.id) return 403;
+```
+
+API key 對應的 user 只能操作**自己的**資源。即使你拿到別人 domain 的 id,因為不屬於你,系統返回 403。
+
+---
+
+## 六、錯誤格式
+
+所有錯誤回應為:
+
+```json
+{"error": "錯誤訊息(中文)"}
+```
+
+HTTP status:
+
+| code | 含義 |
+|---|---|
+| 400 | 參數錯 / 校驗失敗 |
+| 401 | 未授權(沒帶金鑰 / 過期) |
+| 403 | 操作對象不屬於你 |
+| 404 | 資源不存在 |
+| 429 | 限速觸發 |
+| 500 | 伺服器錯誤(檢查 dashboard 系統公告) |
+
+---
+
+## 七、實踐範例
+
+### CI 部署後自動刷快取
+
+GitHub Actions:
+
+```yaml
+name: Deploy & Purge CDN
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build & deploy to origin
+        run: |
+          # 你的部署邏輯,如 rsync 到源站
+      - name: Purge CDN cache
+        env:
+          FURCDN_KEY: ${{ secrets.FURCDN_KEY }}
+        run: |
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $FURCDN_KEY" \
+            https://www.furcdn.us/api/v1/domains/123/purge
+```
+
+`FURCDN_KEY` 存 GitHub Secrets,**不要寫進 repo**。
+
+### Let's Encrypt 自動上傳
+
+cron 每月跑一次,從本地 ACME 客戶端拿到新憑證後上傳:
+
+```bash
+#!/bin/bash
+DOMAIN_ID=123
+CERT=$(cat /etc/letsencrypt/live/example.com/fullchain.pem)
+KEY=$(cat /etc/letsencrypt/live/example.com/privkey.pem)
+
+curl -fsS -X POST \
+  -H "Authorization: Bearer $FURCDN_KEY" \
+  -H "Content-Type: application/json" \
+  -d "$(jq -n --arg c "$CERT" --arg k "$KEY" '{cert: $c, key: $k}')" \
+  https://www.furcdn.us/api/v1/domains/$DOMAIN_ID/ssl
+```
+
+### Python 一行刷快取
+
+```python
+import requests
+
+requests.post(
+    f"https://www.furcdn.us/api/v1/domains/{DOMAIN_ID}/purge",
+    headers={"Authorization": f"Bearer {FURCDN_KEY}"},
+    timeout=10,
+).raise_for_status()
+```
+
+### Node.js
+
+```js
+const r = await fetch(
+  `https://www.furcdn.us/api/v1/domains/${id}/purge`,
+  {
+    method: "POST",
+    headers: { Authorization: `Bearer ${process.env.FURCDN_KEY}` },
+  },
+);
+if (!r.ok) throw new Error(await r.text());
+```
+
+---
+
+## 八、安全建議
+
+### ✅ Do
+
+- 為每個服務 / 機器**單獨建一把金鑰**(出問題能精確 revoke)
+- 設**過期時間**:即使洩漏也有時限
+- 把金鑰存環境變數 / Secret Manager,**不要 commit 進 git**
+- 定期看「末次使用時間」,長期沒用的金鑰刪掉
+- 替**生產 / 測試 / 個人**分別建獨立金鑰
+
+### ❌ Don't
+
+- ❌ 把金鑰寫進前端 JS(會被 view-source 看到)
+- ❌ 把金鑰存到公開 repo(GitHub 自動掃描會公告洩漏)
+- ❌ 多人共用同一把金鑰(出事追責困難)
+- ❌ 金鑰名稱裡寫密碼或敏感字串(列表頁顯示出來)
+
+### 金鑰外洩的緊急處置
+
+1. **立刻**進 dashboard 刪掉外洩的金鑰(刪了就立即失效)
+2. 建新金鑰,更新所有用到的地方
+3. 看「操作記錄」確認攻擊者做了什麼(`purge_cache_api`、`api_key_*` 等動作)
+4. 若有跡象表明攻擊者嘗試其他敏感操作,額外改密 / 改郵 / 重新掃通行密鑰列表
+
+---
+
+## 九、更多端點規劃
+
+目前 v1 只開了最常用的:列域名、刷快取、上傳憑證。後續會逐步開放:
+
+- 取 / 設域名 origin / cache rules / WAF rules
+- 拉訪問日誌 / 統計
+- 域名 CRUD
+
+需求迫切的話開[工單](/dashboard/tickets)告訴我們。
+
+---
+
+## 十、API 對外端點 vs 內部端點
+
+平台同一個 Next.js 進程下兩類端點:
+
+| 路徑 | 鑑權 | 用途 |
+|---|---|---|
+| `/api/v1/*` | API key (Bearer) | **對外開放 API**(本文檔) |
+| `/api/dashboard/*`,`/api/user/*`,`/api/admin/*` | JWT cookie | dashboard 前端內部 ajax,**不對外** |
+| `/api/node/*` | NODE_TOKEN (Bearer) | 節點上報 / 拉 config(節點專用) |
+| `/api/pay/*` | RSA 簽名 | 支付平台 callback |
+| `/api/acme/*` | 公開 | Let's Encrypt 驗證 |
+
+> 不要嘗試用 API key 呼叫 `/api/user/*` 或 `/api/dashboard/*`,鑑權方式不同會 401。
+

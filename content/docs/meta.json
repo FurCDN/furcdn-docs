@@ -1,0 +1,12 @@
+{
+  "title": "FurCDN 文檔",
+  "pages": [
+    "index",
+    "cdn",
+    "cache",
+    "waf",
+    "billing",
+    "api",
+    "troubleshooting"
+  ]
+}
