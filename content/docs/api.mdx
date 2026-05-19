@@ -4,12 +4,6 @@ description: "平台對外開放的 HTTP API,用於程式化控制 CDN(部署管
 ---
 平台對外開放的 HTTP API,用於程式化控制 CDN(部署管線整合 / CI 自動刷快取 / 監控腳本等)。
 
-> **TL;DR**
-> - 鑑權走 `Authorization: Bearer fck_<full-secret>`
-> - 金鑰建立時**只回傳一次**,DB 只存 SHA-256 hash
-> - 限速與 dashboard 共用同一把(防繞)
-> - 端點以 `/api/v1/` 開頭
-
 ---
 
 ## 一、API 金鑰管理

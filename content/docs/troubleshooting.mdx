@@ -54,23 +54,11 @@ dig 你的域名 CAA
 - 取消 80 端口 redirect 到別處的設定
 - 直接手動上傳憑證
 
-### Q3. 「實名認證」叢集進不去
-
-**症狀**:選叢集時某些選項 disabled / 不可見。
-
-**排查**:該叢集 `requireRealName=true`,但你還沒實名。
-
-**解法**:
-
-1. 先讓管理員開啟你的 `alipayVerifyEnabled`(平台級開關)
-2. **儀表板 > 實名認證** 走支付寶人臉識別
-3. 完成後即可加入
-
 ---
 
 ## 二、回源與 502
 
-### Q4. 出現 502 Bad Gateway
+### Q3. 出現 502 Bad Gateway
 
 **症狀**:訪客打開網站看到 502 模板頁(顯示「無法連接到源站」)。
 
@@ -91,7 +79,7 @@ dig 你的域名 CAA
 - TLS 失敗 → 設 `sni`(回源握手用的 Server Name)或 `hostOverride`
 - DNS 失敗 → 確認源站域名能在公網解析,不是只在內網
 
-### Q5. 全部請求 502 但源站直連正常
+### Q4. 全部請求 502 但源站直連正常
 
 **症狀**:節點 502,但你 `curl 源站` 正常。
 
@@ -106,7 +94,7 @@ dig 你的域名 CAA
 hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 ```
 
-### Q6. 部分節點 502 部分正常
+### Q5. 部分節點 502 部分正常
 
 **症狀**:刷新有時拿到 200 有時 502。
 
@@ -126,7 +114,7 @@ hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 
 ## 三、快取問題
 
-### Q7. 快取永遠不命中
+### Q6. 快取永遠不命中
 
 **症狀**:訪問日誌顯示 `cache_status=MISS`。
 
@@ -143,7 +131,7 @@ hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 - 開 `ignoreQueryString` 讓相同資源共用快取
 - 詳見 [快取深度指南](/cache)
 
-### Q8. 改了源站但 CDN 沒更新
+### Q7. 改了源站但 CDN 沒更新
 
 **症狀**:源站已部署新版本,但 CDN 還是舊內容。
 
@@ -158,7 +146,7 @@ hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 - 或等 TTL 自然過期
 - 配合源站使用版本號(`?v=2`)+ `ignoreQueryString` 平衡長 TTL 與更新頻率
 
-### Q9. 快取了不該快取的(個人資料洩漏)
+### Q8. 快取了不該快取的(個人資料洩漏)
 
 **症狀**:訪客 A 看到了訪客 B 的個人資料頁。
 
@@ -173,7 +161,7 @@ hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 
 ## 四、WAF 問題
 
-### Q10. WAF 規則沒生效
+### Q9. WAF 規則沒生效
 
 **症狀**:寫了規則但攻擊請求還是進來。
 
@@ -190,7 +178,7 @@ hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 - 改 priority,確保 block 規則在 allow 規則之後(或 allow 太寬鬆)
 - 用 `regex` 試一條更寬鬆的條件 + log 動作先觀察是否真的能匹配
 
-### Q11. WAF 誤封正常使用者
+### Q10. WAF 誤封正常使用者
 
 **症狀**:正常使用者反饋 403。
 
@@ -206,7 +194,7 @@ hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 - 加白名單規則(高優先級 `allow`)放行受影響 IP
 - 細化規則條件(如 SQL 注入規則加上 `method=POST` + 排除特定 path)
 
-### Q12. Rate Limit 觸發後永久進不來
+### Q11. Rate Limit 觸發後永久進不來
 
 **症狀**:某 IP 觸發限速後,等了很久還是 429。
 
@@ -222,7 +210,7 @@ hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 
 ## 五、健康檢查
 
-### Q13. 域名健康檢查一直告警
+### Q12. 域名健康檢查一直告警
 
 **症狀**:每天都收到「域名健康檢查告警」郵件。
 
@@ -239,7 +227,7 @@ hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 - origin-down → 修源站 / 加備援源站
 - 確認域名 DNS 真的指向 FurCDN(`dig +short` 看返回 IP)
 
-### Q14. 流量超額自動停用了域名
+### Q13. 流量超額自動停用了域名
 
 **症狀**:域名突然 disable + 收到「本月流量已超額」郵件。
 
@@ -255,7 +243,7 @@ hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 
 ## 六、登入/帳號
 
-### Q15. 通行密鑰登入失敗
+### Q14. 通行密鑰登入失敗
 
 **症狀**:點「使用通行密鑰」沒反應 / 報錯 / 永遠驗證中。
 
@@ -270,7 +258,7 @@ hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 - 用密碼登入 → 進 dashboard 刪舊密鑰 + 加新密鑰
 - 完全救不回 → `/forgot-password` 走郵件 reset
 
-### Q16. 收不到驗證碼郵件
+### Q15. 收不到驗證碼郵件
 
 **症狀**:點「發送驗證碼到郵箱」沒收到信。
 
@@ -286,7 +274,7 @@ hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 - 加白寄件人到地址簿
 - 換用通行密鑰 step-up 驗證(不需要郵件)
 
-### Q17. 忘記密碼,重設信也收不到
+### Q16. 忘記密碼,重設信也收不到
 
 **症狀**:`/forgot-password` 按了沒收到信。
 
@@ -301,7 +289,7 @@ hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 - 確認郵箱拼對了
 - 開工單聯絡管理員(管理員可手動 reset)
 
-### Q18. 改密之後其他裝置自動登出
+### Q17. 改密之後其他裝置自動登出
 
 **症狀**:在電腦改密後,手機上的 dashboard 突然要求重新登入。
 
@@ -311,7 +299,7 @@ hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 
 ## 七、計費
 
-### Q19. 充值了但餘額沒到帳
+### Q18. 充值了但餘額沒到帳
 
 **症狀**:支付寶顯示已支付,但 FurCDN 餘額沒變。
 
@@ -326,7 +314,7 @@ hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 - 等 30 分鐘背景 cron 自動補
 - 仍 `pending` 一小時以上 → 開工單 + 提供 `outTradeNo`
 
-### Q20. 自動續費沒扣
+### Q19. 自動續費沒扣
 
 **症狀**:套餐到期前 24h 沒見到扣費紀錄。
 
@@ -341,7 +329,7 @@ hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 - 不夠就充值,下個 cron 會嘗試
 - 若反覆失敗,當天不再自動扣(避免 spam),需手動續費或先補餘額
 
-### Q21. 兌換碼提示「已被使用」
+### Q20. 兌換碼提示「已被使用」
 
 **症狀**:輸入兌換碼錯誤訊息「已兌換過」。
 
@@ -354,55 +342,9 @@ hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 
 ---
 
-## 八、節點 / 部署(管理員向)
+## 八、性能
 
-### Q22. 節點 token 不認
-
-**症狀**:節點上報心跳 401。
-
-**排查**:
-
-1. 節點 `/etc/furcdn-node/config.env` 的 `NODE_TOKEN` 與 dashboard `節點 > token` 一致嗎?
-2. master 端 token 被輪換過嗎?(看審計 `admin_node_token_rotate`)
-
-**解法**:
-
-- 取最新 token 重新部署節點
-- 若懷疑 token 外洩 → 主動輪換並重新部署
-
-### Q23. 節點 SSH 部署失敗 host key 不符
-
-**症狀**:重新部署時報「host key 不符,可能 MITM」。
-
-**這是預期的安全防護**:第一次部署時記錄了 fingerprint,後續校驗。
-
-**排查**:目標主機的 SSH key 是否真的換過?(重灌系統 / 換主機都會換)
-
-**解法**:
-
-- 若確認是合法重灌 → 管理員後台清掉 `Node.sshHostKey` 欄位重新 TOFU
-- 若不確認 → **拒絕部署**,確認沒人 MITM
-
-### Q24. DNS 記錄沒有自動更新
-
-**症狀**:加了節點但 DNS 沒看到對應 A 記錄。
-
-**排查**:
-
-1. 阿里雲 DNS 配置正確嗎?(`管理員 > DNS`)
-2. 阿里雲 access key 有沒有過期 / 撤銷
-3. 看後端 log 有沒有 `addDnsRecord failed`
-
-**解法**:
-
-- 在管理員 DNS 頁重設 access key
-- 強制觸發 `reconcileClusterDns`
-
----
-
-## 九、性能
-
-### Q25. CDN 比直連源站還慢
+### Q21. CDN 比直連源站還慢
 
 **症狀**:訪問 CDN 域名感覺比 `curl 源站` 慢。
 
@@ -417,7 +359,7 @@ hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 - 換更靠近使用者的叢集
 - 開「健康檢查」自動切換故障節點
 
-### Q26. 壓測時節點被打掛
+### Q22. 壓測時節點被打掛
 
 **症狀**:壓測請求觸發大量 503 / 連線中斷。
 
@@ -434,9 +376,9 @@ hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 
 ---
 
-## 十、其他
+## 九、其他
 
-### Q27. 「立即刷新快取」沒清掉
+### Q23. 「立即刷新快取」沒清掉
 
 **症狀**:點了刷新但訪客仍看到舊內容。
 
@@ -451,7 +393,7 @@ hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 - 或改規則的 `cacheControl` 縮短瀏覽器端 max-age
 - 等下次 SSE 重連節點會自動拉最新 config(但**舊 cache entry 不會被清**,需手動再 purge 一次)
 
-### Q28. 跨叢集域名遷移
+### Q24. 跨叢集域名遷移
 
 **症狀**:想把域名從 `mainland` 叢集換到 `overseas`。
 
@@ -460,7 +402,7 @@ hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 - 解法:刪了在另一個叢集重建(會丟失歷史統計)
 - 或開工單請求協助 / 申請功能
 
-### Q29. 訪問日誌顯示 IP 是 127.0.0.1 或內網 IP
+### Q25. 訪問日誌顯示 IP 是 127.0.0.1 或內網 IP
 
 **症狀**:訪客 IP 都顯示成本機。
 
@@ -472,7 +414,7 @@ hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 - 前面有 Cloudflare → `realIpHeader=cf-connecting-ip`
 - 前面有 nginx → `realIpHeader=x-real-ip`
 
-### Q30. 「禁止指向內網/回環/雲端 metadata 位址」
+### Q26. 「禁止指向內網/回環/雲端 metadata 位址」
 
 **症狀**:加 origin 報錯該訊息。
 
