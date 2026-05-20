@@ -12,6 +12,7 @@ import type { Metadata } from 'next';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
 import { Footer } from '@/components/footer';
 import { ViewOptionsPopover } from '@/components/view-options';
+import { siteUrl } from '@/lib/shared';
 
 export default async function Page(props: PageProps<'/[[...slug]]'>) {
   const params = await props.params;
@@ -20,6 +21,28 @@ export default async function Page(props: PageProps<'/[[...slug]]'>) {
 
   const MDX = page.data.body;
   const markdownUrl = getPageMarkdownUrl(page).url;
+  const pageUrl = new URL(page.url, siteUrl).toString();
+
+  const articleJsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'TechArticle',
+    headline: page.data.title,
+    description: page.data.description,
+    url: pageUrl,
+    image: getPageImage(page).url,
+    inLanguage: 'zh-Hant',
+    isAccessibleForFree: true,
+    publisher: {
+      '@type': 'Organization',
+      name: 'SLOWSPEED NETWORK LLC.',
+      url: 'https://www.furcdn.us',
+      logo: 'https://oss.furcdn.us/furcdn_favicon.svg',
+    },
+    mainEntityOfPage: {
+      '@type': 'WebPage',
+      '@id': pageUrl,
+    },
+  };
 
   return (
     <DocsPage
@@ -27,6 +50,10 @@ export default async function Page(props: PageProps<'/[[...slug]]'>) {
       full={page.data.full}
       tableOfContent={{ style: 'clerk' }}
     >
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(articleJsonLd) }}
+      />
       <DocsTitle>{page.data.title}</DocsTitle>
       <DocsDescription className="mb-0">{page.data.description}</DocsDescription>
       <div className="flex flex-row gap-2 items-center border-b pb-6">

@@ -63,6 +63,23 @@ export const metadata: Metadata = {
   },
 };
 
+const websiteJsonLd = {
+  '@context': 'https://schema.org',
+  '@type': 'WebSite',
+  name: appName,
+  alternateName: 'FurCDN Docs',
+  url: siteUrl,
+  description:
+    'FurCDN 多節點 CDN 加速平台的官方文檔 —— 涵蓋域名接入、快取、WAF、計費與開放 API。',
+  inLanguage: 'zh-Hant',
+  publisher: {
+    '@type': 'Organization',
+    name: 'SLOWSPEED NETWORK LLC.',
+    url: 'https://www.furcdn.us',
+    logo: 'https://oss.furcdn.us/furcdn_favicon.svg',
+  },
+};
+
 export default function Layout({ children }: LayoutProps<'/'>) {
   return (
     <html
@@ -71,6 +88,10 @@ export default function Layout({ children }: LayoutProps<'/'>) {
       suppressHydrationWarning
     >
       <body className="flex flex-col min-h-screen">
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(websiteJsonLd) }}
+        />
         <TranslateProxyHandler />
         <RootProvider>{children}</RootProvider>
         <Analytics />
