@@ -1,62 +1,136 @@
 ---
 title: "WAF 完整規則手冊"
-description: "從零開始寫 WAF 規則,涵蓋全部運算子 / 動作 / 常見場景配方。"
+description: "從零開始寫 WAF 規則,涵蓋全部 Field / Operator / Action,以及 JSON 模式與批量匯入匯出。"
 ---
-從零開始寫 WAF 規則,涵蓋全部運算子 / 動作 / 常見場景配方。
+
+從零開始寫 WAF 規則,涵蓋全部 Field / Operator / Action,以及 JSON 模式與批量匯入匯出。
 
 > **TL;DR** 三條黃金原則:
 > 1. **白名單放最前面**(優先級小數字),保證信任流量永遠通過
 > 2. **新規則先 `log` 後 `block`**,看一週命中再決定是否升級
-> 3. **預設 6 條規則保留**,涵蓋了 80% 攻擊面
+> 3. **預設規則保留**,涵蓋了 80% 攻擊面
 
 ---
 
-## 一、規則結構
+## 〇、JSON 模式 & 批量 JSON
 
-每條 WAF 規則 5 個欄位:
+新版面板對應每條規則的「新增 / 編輯」對話框增加 **JSON 模式** Tab;
+頁面頂部「自訂 WAF 規則」區段右上角新增 **批量 JSON** 按鈕。
+
+兩個入口共享一套規則 JSON Schema,用法一致:你看到的就是後端真正存的東西。
+
+### JSON 模式(單規則)
+
+進入 **儀表板 > 域名 > 編輯 > WAF**,點「自訂 WAF 規則」區段右上角 **新增** /
+列表上任一條規則的 **編輯** 鉛筆。對話框頂端有兩個 Tab:
+
+- **表單**:可視化點按填欄位(舊行為)。
+- **JSON 模式**:直接編輯整條規則 JSON。
+
+切換方向:
+
+- **表單 → JSON**:當前表單序列化成 JSON 顯示。
+- **JSON → 表單**:嘗試解析 JSON,成功後回填表單;失敗則停留在 JSON tab 顯示錯誤,
+  原本表單內容不被覆蓋。
+
+存檔時若停在 JSON tab,送出的是 JSON 內容;停在表單 tab,送出表單欄位。
+
+### 批量 JSON 匯入 / 匯出
+
+按頁面上的 **批量 JSON** 開啟對話框:
+
+- **匯出**:把當前所有「自訂」規則(不含預設規則)序列化成 JSON 陣列,可一鍵複製。
+  典型用途:把 A 域名的規則完整搬到 B 域名 / 跨環境備份。
+- **匯入**:貼入 JSON 陣列,**逐條 POST 新增**,不會覆蓋既有規則。
+  - 與既有同 `(name, conditions, action)` 完全一致 → 後端回 409 拒絕,計入失敗數。
+  - 匯入後超過 10 條自訂上限 → 前端先擋,完全不送出。
+  - 部分失敗會在 toast 顯示失敗清單,**成功的那幾條已寫入**,不會自動 rollback。
+
+> 匯出/匯入用的是同一份 schema(下面第三節有完整參考);你可以匯出當作 template,
+> 改改再貼回去當新規則。
+
+---
+
+## 一、規則結構(完整 Schema)
+
+每條 WAF 規則的完整 JSON:
 
 ```json
 {
-  "name": "規則名稱(顯示用)",
-  "conditions": [/* 條件群組陣列,見下文 */],
+  "name": "規則顯示名(必填,≤100 字)",
+  "description": "可選,≤500 字",
   "action": "block",
   "blockStatus": 403,
   "blockBody": "Blocked by FurCDN WAF",
+  "rateLimitCount": 60,
+  "rateLimitWindow": 60,
+  "rateLimitBlock": 300,
+  "actionDurationSec": 0,
   "priority": 10,
-  "enabled": true
+  "enabled": true,
+  "conditions": [
+    {
+      "logic": "AND",
+      "conditions": [
+        { "field": "uri", "operator": "startsWith", "value": "/api/login" },
+        { "field": "method", "operator": "equals", "value": "POST", "connector": "AND" }
+      ]
+    }
+  ]
 }
 ```
 
+### 欄位逐項
+
+| 欄位 | 型別 | 必填 | 預設 | 說明 |
+|---|---|---|---|---|
+| `name` | string | ✓ | — | 規則名 |
+| `description` | string | | `null` | 描述 |
+| `action` | enum | ✓ | `"block"` | 見 [§2 Action](#二六種-action) |
+| `blockStatus` | int 100–599 | | 403 | `action=block` 回傳的狀態碼 |
+| `blockBody` | string | | `"Blocked"` | `action=block` 回傳的 body(≤4096 字) |
+| `rateLimitCount` | int ≥0 | | — | `action=rateLimit` 視窗內最大請求數 |
+| `rateLimitWindow` | int ≥0 | | — | `action=rateLimit` 視窗長度(秒) |
+| `rateLimitBlock` | int ≥0 | | — | `action=rateLimit` 觸發後封鎖時長(秒) |
+| `actionDurationSec` | int 0–86400 | | 0 | block/challenge/uam 的「黏性持續秒數」,見 [§2.5](#25-action-黏性) |
+| `priority` | int ≥0 | | 10 | 數字小的先評估 |
+| `enabled` | bool | | true | `false` 視為不存在 |
+| `conditions` | group[] | ✓ | `[]` | 條件群組陣列,見 [§4](#四條件群組) |
+
+### 後端限制
+
+- **每網站自訂規則上限 10 條**(預設規則不計入)
+- **單條規則總條件數上限 5 個**(跨 group 加總)
+- **`conditions` 序列化後 ≤32 KB**
+- **同 `(name, conditions, action)` 完全相同**會被去重(回 409)
+
 ### 評估流程
 
-1. 規則按 `priority` **數字小的先評估**
+1. 規則按 `priority` **數字小的先評估**(同優先級不保證順序)
 2. 條件命中 → 執行 action
-3. action = `allow` → 立即放行,跳過所有後續規則
-4. action = `block` / `challenge` → 立即阻斷,跳過所有後續
-5. action = `log` / `rateLimit` 不命中 → 繼續評估下一條規則
+3. `allow` → 立即放行,**跳過所有後續規則**(白名單最強)
+4. `block` / `challenge` / `uam` → 立即阻斷
+5. `log` / `rateLimit` 不命中 → 繼續評估下一條規則
 6. 全部規則都沒命中 → 預設放行
 
 ---
 
-## 二、5 種 Action
+## 二、六種 Action
 
-### 1. `allow`(白名單)
+### 2.1 `allow`(白名單)
 
-命中即放行,**跳過後續所有規則**。常見用途:
-
-- 公司辦公室 IP 永遠通過
-- 監控掃描器 IP 不被誤封
-- 內部 API 客戶端跳過 WAF
+命中即放行,**跳過後續所有規則**。
 
 ```json
 {
   "name": "公司白名單",
-  "priority": 1,
   "action": "allow",
+  "priority": 1,
+  "enabled": true,
   "conditions": [{
     "logic": "AND",
     "conditions": [
-      {"field": "ip", "operator": "cidr", "value": "203.0.113.0/24"}
+      { "field": "ip", "operator": "cidr", "value": ["203.0.113.0/24", "198.51.100.0/24"] }
     ]
   }]
 }
@@ -64,20 +138,21 @@ description: "從零開始寫 WAF 規則,涵蓋全部運算子 / 動作 / 常見
 
 > ⚠️ `allow` 是「徹底信任」,放行後**連 rate limit、challenge、預設 block 都跳過**。要謹慎用。
 
-### 2. `log`(記錄)
+### 2.2 `log`(記錄)
 
 命中只寫日誌不影響流量。**新規則上線前先 log 看誤判率**。
 
 ```json
 {
   "name": "可疑 UA(觀察)",
-  "priority": 100,
   "action": "log",
+  "priority": 100,
+  "enabled": true,
   "conditions": [{
     "logic": "OR",
     "conditions": [
-      {"field": "header:user-agent", "operator": "contains", "value": "curl"},
-      {"field": "header:user-agent", "operator": "contains", "value": "wget"}
+      { "field": "ua", "operator": "contains", "value": "curl" },
+      { "field": "ua", "operator": "contains", "value": "wget", "connector": "OR" }
     ]
   }]
 }
@@ -85,21 +160,22 @@ description: "從零開始寫 WAF 規則,涵蓋全部運算子 / 動作 / 常見
 
 跑一週後到「訪問日誌」搜命中,確認沒誤判再改 `block`。
 
-### 3. `block`(阻斷)
+### 2.3 `block`(阻斷)
 
 最常用。命中回 `blockStatus`(預設 403)+ `blockBody`。
 
 ```json
 {
   "name": "禁止 .git 訪問",
-  "priority": 5,
   "action": "block",
   "blockStatus": 404,
   "blockBody": "Not Found",
+  "priority": 5,
+  "enabled": true,
   "conditions": [{
     "logic": "AND",
     "conditions": [
-      {"field": "uri", "operator": "starts_with", "value": "/.git"}
+      { "field": "uri", "operator": "startsWith", "value": "/.git" }
     ]
   }]
 }
@@ -107,9 +183,9 @@ description: "從零開始寫 WAF 規則,涵蓋全部運算子 / 動作 / 常見
 
 > 用 404 而非 403 可以「裝沒這個資源」,讓掃描器以為路徑不存在。
 
-### 4. `rateLimit`(速率限制)
+### 2.4 `rateLimit`(速率限制)
 
-命中後計數,超過閾值在窗口內封鎖。**3 個額外參數**:
+命中後計數,超過閾值就在窗口內封鎖。
 
 | 參數 | 說明 |
 |---|---|
@@ -117,21 +193,20 @@ description: "從零開始寫 WAF 規則,涵蓋全部運算子 / 動作 / 常見
 | `rateLimitWindow` | 視窗長度(秒) |
 | `rateLimitBlock` | 觸發後封鎖時長(秒) |
 
-範例:登入端點 1 分鐘 5 次,超過封 10 分鐘:
-
 ```json
 {
   "name": "登入速率限制",
-  "priority": 8,
   "action": "rateLimit",
   "rateLimitCount": 5,
   "rateLimitWindow": 60,
   "rateLimitBlock": 600,
+  "priority": 8,
+  "enabled": true,
   "conditions": [{
     "logic": "AND",
     "conditions": [
-      {"field": "uri", "operator": "starts_with", "value": "/api/login"},
-      {"field": "method", "operator": "equals", "value": "POST"}
+      { "field": "uri", "operator": "startsWith", "value": "/api/login" },
+      { "field": "method", "operator": "equals", "value": "POST", "connector": "AND" }
     ]
   }]
 }
@@ -139,204 +214,199 @@ description: "從零開始寫 WAF 規則,涵蓋全部運算子 / 動作 / 常見
 
 > 計數 key 是 `clientIP + rule.id`,每條規則獨立計數。
 
-### 5. `challenge`(挑戰閘道)
+### 2.5 Action 黏性
 
-命中 IP 進入「JS 挑戰頁」,通過後簽 cookie 30 分鐘有效:
+`block` / `challenge` / `uam` 三種有「黏性持續秒數」`actionDurationSec`(0–86400)。
 
-- 真實使用者**幾乎無感**(`<1 秒` 解 PoW + 自動跳轉)
-- 機器人/爬蟲**無法通過**(沒有 JS runtime)
+- `0` = 無黏性,每請求重新評估條件。
+- `>0` = 條件第一次命中後**鎖定該 action N 秒**,期間跳過條件評估。
 
-最佳場景:輕度 CC 攻擊(高頻但 IP 分散),或「對全站可疑流量加道牆」。
+典型場景:`challenge` + `actionDurationSec=300`,可避免 QPS 抖動導致挑戰閃爍。
+
+### 2.6 `challenge`(PoW 挑戰閘道)
+
+命中 IP 進入 JS 挑戰頁,通過後簽 cookie。
+
+- 真實使用者 < 1 秒解 PoW 自動跳轉,**幾乎無感**。
+- 機器人/爬蟲沒有 JS runtime,**無法通過**。
 
 ```json
 {
-  "name": "海外可疑流量挑戰",
-  "priority": 50,
+  "name": "API 區段加挑戰",
   "action": "challenge",
+  "actionDurationSec": 300,
+  "priority": 50,
+  "enabled": true,
   "conditions": [{
     "logic": "AND",
     "conditions": [
-      {"field": "country", "operator": "in", "value": ["RU", "KP"]},
-      {"field": "uri", "operator": "starts_with", "value": "/api/"}
+      { "field": "uri", "operator": "startsWith", "value": "/api/" }
     ]
   }]
 }
 ```
 
+### 2.7 `uam`(5 秒盾)
+
+跟 `challenge` 類似,但無條件擋 5 秒延遲後自動放行。比 challenge 寬鬆,適合輕度過濾。
+
 ---
 
-## 三、10 種 Field
-
-### `uri` 請求路徑
-
-不含 query string。範例 `/api/login` / `/admin/users`。
-
-### `query` 查詢字串
-
-不含 `?`。範例 `id=1&token=abc`。
-
-### `header:<name>` 指定 HTTP header
-
-`name` 大小寫不敏感。常用:
-
-- `header:user-agent`
-- `header:referer`
-- `header:cookie`
-- `header:host`
-- `header:x-forwarded-for`(若使用者開了 `realIpHeader`,這個是真實 IP 之前的鏈路)
-
-### `method`
-
-`GET` / `POST` / `PUT` / `DELETE` / `OPTIONS` / `HEAD` / `PATCH`
+## 三、十種 Field
 
 ### `ip`
 
-**已套用 `realIpHeader`** 的真實客戶端 IP。
+已套用 `realIpHeader` 後的真實客戶端 IP。
+可選 operator:`equals` / `cidr` / `in` / `notIn`。
 
-### `referer`
+```json
+{ "field": "ip", "operator": "cidr", "value": "10.0.0.0/8" }
+{ "field": "ip", "operator": "cidr", "value": ["1.2.3.0/24", "5.6.7.8/32"] }
+{ "field": "ip", "operator": "in", "value": ["1.2.3.4", "5.6.7.8"] }
+```
 
-Referer header(`header:referer` 的快捷方式,單獨拿出來方便用)。
+### `uri`
+
+請求路徑,**不含 query string**(query 用下面的 `queryParam`)。
+可選 operator:`equals` / `contains` / `startsWith` / `endsWith` / `regex`。
+
+```json
+{ "field": "uri", "operator": "startsWith", "value": "/api/v1/" }
+{ "field": "uri", "operator": "endsWith", "value": ".php" }
+{ "field": "uri", "operator": "regex", "value": "^/files/[0-9a-f]{32}\\.zip$" }
+```
+
+### `header`
+
+任意 HTTP header。**需要額外的 `headerName` 欄位**(大小寫不敏感)。
+可選 operator:`equals` / `contains` / `startsWith` / `regex`。
+
+```json
+{ "field": "header", "headerName": "Authorization", "operator": "startsWith", "value": "Bearer " }
+{ "field": "header", "headerName": "X-Forwarded-For", "operator": "regex", "value": ".*,.*,.*" }
+```
 
 ### `body`
 
-請求 body。**有大小限制**:
+請求 body。
+可選 operator:`contains` / `regex`。
 
-- 預設只讀前 64 KB
-- 大檔上傳(超過上限)的 body 不被讀,規則自動視為不命中
-
-### `country`
-
-ISO 3166-1 alpha-2 國家碼:`CN` / `US` / `JP` / `RU` / `KP` 等。
-透過 ipgeo 查得(海外用 ipinfo,國內用 qqwry)。
-
-### `asn`
-
-ASN 編號(數字),如 `15169`(Google)/ `13335`(Cloudflare)。
-
-### 範例:綜合多 field
+- 預設只讀前 **64 KB**;超過上限的 body 一律視為不命中(避免巨檔上傳卡 WAF)。
+- 只在 POST/PUT/PATCH 有意義,GET 通常空 body。
 
 ```json
-{"field": "uri", "operator": "starts_with", "value": "/api/admin"}
-{"field": "header:user-agent", "operator": "contains", "value": "Bot"}
-{"field": "ip", "operator": "cidr", "value": "10.0.0.0/8", "negate": true}
-{"field": "country", "operator": "equals", "value": "CN"}
-{"field": "asn", "operator": "in", "value": [15169, 13335]}
+{ "field": "body", "operator": "regex", "value": "(?i)union\\s+select" }
 ```
+
+### `ua`(User-Agent 快捷)
+
+等同 `header` + `headerName="User-Agent"`,只是寫起來短。
+可選 operator:`equals` / `contains` / `startsWith` / `regex` / `in`。
+
+```json
+{ "field": "ua", "operator": "in", "value": ["sqlmap", "nikto", "acunetix"] }
+```
+
+### `method`
+
+HTTP method。
+可選 operator:`equals` / `in`。
+
+```json
+{ "field": "method", "operator": "in", "value": ["DELETE", "PATCH", "PUT"] }
+```
+
+### `referer`
+
+Referer header(`header` + `headerName="Referer"` 的快捷)。
+可選 operator:`equals` / `contains` / `startsWith` / `regex`。
+
+```json
+{ "field": "referer", "operator": "startsWith", "value": "https://example.com", "negate": true }
+```
+
+### `queryParam`
+
+單一 query 參數。**需要 `queryParamName` 欄位**。
+可選 operator:`equals` / `contains` / `regex`。
+
+```json
+{ "field": "queryParam", "queryParamName": "redirect", "operator": "regex", "value": "^https?://(?!example\\.com)" }
+```
+
+### `threatIntel`(威脅情報)
+
+是否命中威脅情報庫的特定來源。`value` 為來源 ID 字串:
+
+| 來源 ID | 內容 |
+|---|---|
+| `spamhaus_drop` | Spamhaus 全球已知惡意網段 |
+| `spamhaus_edrop` | Extended DROP(更廣) |
+| `firehol_level1` | FireHOL 一級惡意 IP |
+| `tor_exit` | Tor 出口節點 |
+| `self_feedback` | 本平台 24h 高頻失敗 IP(自反饋) |
+
+可選 operator:`equals` / `notEquals` / `in` / `notIn`。
+
+```json
+{ "field": "threatIntel", "operator": "equals", "value": "tor_exit" }
+{ "field": "threatIntel", "operator": "in", "value": ["spamhaus_drop", "firehol_level1"] }
+{ "field": "threatIntel", "operator": "notEquals", "value": "" }
+```
+
+最後一個寫法等同「命中任一來源」(空字串 = 未命中)。
+
+### `requestRate`(60 秒滾動請求速率)
+
+過去 60 秒該 domain 的請求總數(節點端 rolling counter)。
+可選 operator:`gt` / `lt` / `gte` / `lte`。`value` 為數字(QPS×60)。
+
+```json
+{ "field": "requestRate", "operator": "gt", "value": 6000 }
+```
+
+> 適合做「全站 QPS > N 時整段加挑戰」這種動態自動防護。
 
 ---
 
-## 四、10 種 Operator + Negate
-
-### `contains`
-
-子字串包含。**大小寫不敏感**。
-
-```json
-{"field": "header:user-agent", "operator": "contains", "value": "sqlmap"}
-```
-
-### `equals`
-
-完全相等。**大小寫敏感**(field 為 ASCII 字串時)。
-
-### `regex`
-
-RE2 正則(Go 標準庫,不支援 backreference / lookahead)。
-
-```json
-{"field": "query", "operator": "regex", "value": "(?i)union\\s+select"}
-```
-
-> ⚠️ 正則表達式效能低於字串比對。能用 `contains` / `starts_with` 就不要用 regex。
-
-### `not_contains` / `not_equals`
-
-否定版本。等同 `contains` / `equals` + `negate: true`,擇一使用。
-
-### `starts_with` / `ends_with`
-
-前綴 / 後綴匹配。
-
-```json
-{"field": "uri", "operator": "starts_with", "value": "/api/v1/"}
-{"field": "uri", "operator": "ends_with", "value": ".php"}
-```
-
-### `in`
-
-值在列表中。`value` 為陣列。
-
-```json
-{"field": "country", "operator": "in", "value": ["RU", "KP", "IR"]}
-{"field": "method", "operator": "in", "value": ["DELETE", "PATCH"]}
-```
-
-### `cidr`
-
-IP 落在 CIDR 範圍。`value` 為單一 CIDR 字串或字串陣列。
-
-```json
-{"field": "ip", "operator": "cidr", "value": "192.168.0.0/16"}
-{"field": "ip", "operator": "cidr", "value": ["1.2.3.0/24", "5.6.7.8/32"]}
-```
-
-支援 IPv4 + IPv6。
-
-### `threat`
-
-命中**威脅情報庫**(無需 `value`)。
-
-```json
-{"field": "ip", "operator": "threat"}
-```
-
-聚合 4 個來源:Spamhaus DROP/EDROP、FireHOL Level 1、Tor 出口、本平台自反饋。
-
-### `negate: true`
-
-**所有 operator 都可加 `negate: true` 取反**。一個 flag 通用,不需另外學「not_xxx」。
-
-```json
-{"field": "ip", "operator": "cidr", "value": "1.2.3.0/24", "negate": true}
-// 等同「IP 不在 1.2.3.0/24」
-```
-
----
-
-## 五、條件群組與邏輯連接
+## 四、條件群組
 
 ### 群組(Group)
 
-一條規則可有**多個 group**,group 之間是 **OR**(任一命中即規則命中)。
-
-### 群組內條件(Conditions)
-
-每個 condition 帶 `connector`(AND / OR),從左到右逐條合併:
+`conditions` 是**群組陣列**,**群組之間是 OR**(任一群組命中即規則命中)。
+每個群組:
 
 ```json
 {
-  "logic": "AND",
+  "logic": "AND",         // 舊資料相容用 fallback,新規則建議用 connector
   "conditions": [
-    {"field": "uri", "operator": "starts_with", "value": "/admin/"},
-    {"field": "ip", "operator": "cidr", "value": "1.2.3.0/24", "negate": true, "connector": "AND"},
-    {"field": "header:authorization", "operator": "equals", "value": "", "connector": "OR"}
+    { "field": "...", "operator": "...", "value": "..." },
+    { "field": "...", "operator": "...", "value": "...", "connector": "AND" },
+    { "field": "...", "operator": "...", "value": "...", "connector": "OR" }
   ]
 }
 ```
 
-評估順序:
+### 群組內 connector
 
-1. `(uri starts /admin/)`
-2. `... AND (ip not in 1.2.3.0/24)`
-3. `... OR (no auth header)`
+第二個及之後的 condition 都帶 `connector: "AND" | "OR"`,從左到右逐條合併。
+**沒有運算子優先級**,要強制邏輯就拆成多個 group。
 
-> **無運算子優先級**,完全是左到右合併。要強制邏輯就用多個 group 拆。
+- 第 1 條 condition 的 `connector` 被忽略(沒有「前一條」可合併)
+- 沒寫 `connector` 時 fallback 到 `group.logic`(舊資料相容)
 
-### 第一條的 connector 忽略
+### `negate: true`(取反)
 
-第一條 condition 的 `connector` 不被讀(沒有「前一條」可合併)。fallback 到 `group.logic`(舊資料相容)。
+**所有 operator 都可加 `negate: true` 整條取反**:
 
-### 多 group 範例:「管理路徑 AND 不在白名單」OR「敏感 query」
+```json
+{ "field": "ip", "operator": "cidr", "value": "10.0.0.0/8", "negate": true }
+// IP 不在 10.0.0.0/8
+```
+
+### 多 group 範例
+
+「(在 /admin/* 且不在白名單) **OR** (body 含 SQL 注入特徵)」:
 
 ```json
 {
@@ -344,281 +414,214 @@ IP 落在 CIDR 範圍。`value` 為單一 CIDR 字串或字串陣列。
     {
       "logic": "AND",
       "conditions": [
-        {"field": "uri", "operator": "starts_with", "value": "/admin/"},
-        {"field": "ip", "operator": "cidr", "value": "1.2.3.0/24", "negate": true}
+        { "field": "uri", "operator": "startsWith", "value": "/admin/" },
+        { "field": "ip", "operator": "cidr", "value": "10.0.0.0/8", "negate": true, "connector": "AND" }
       ]
     },
     {
       "logic": "AND",
       "conditions": [
-        {"field": "query", "operator": "regex", "value": "(?i)password|secret|token"}
+        { "field": "body", "operator": "regex", "value": "(?i)union\\s+select" }
       ]
     }
   ]
 }
 ```
 
-兩個 group 之間是 OR:管理路徑非白名單 **或** query 含敏感關鍵字 → 命中。
+---
+
+## 五、預設規則
+
+新建域名時自動產生若干條 `isDefault: true` 規則(掃描器攔截 / 空 UA / SQL 注入 / XSS / 路徑穿越等)。
+
+- 預設規則**不可刪除**,只能 toggle 開關。
+- 開關欄位是 `defaultEnabled`(不是 `enabled`),前端會自動處理。
+- 預設規則**不計入** 10 條自訂上限,也**不會被批量匯出**。
 
 ---
 
-## 六、預設 6 條規則(新建域名自動產生)
+## 六、十條常用配方(可直接貼進「批量 JSON 匯入」)
 
-| 規則 | 條件 | 動作 |
-|---|---|---|
-| 掃描器攔截 | `header:user-agent` contains `nmap` / `sqlmap` / `nikto` / `acunetix` / `nessus` | block 403 |
-| 空 User-Agent | `header:user-agent` equals `""` | block 403 |
-| SQL 注入 | `query`/`body` regex `(?i)(union\s+select\|drop\s+table\|insert\s+into)` | block 403 |
-| XSS | `query`/`body` regex `(?i)<script\|javascript:\|onerror=` | block 403 |
-| 路徑穿越 | `uri` contains `../` | block 403 |
-| 惡意 Referer | `referer` contains 已知惡意網站列表 | block 403 |
-
-**保留預設規則**(可細調但別全砍),這些是最低標準防護。
-
----
-
-## 七、常見場景配方
-
-### 1. 公司辦公室白名單
+把整段貼到 **批量 JSON > 匯入** 即可一次新增(注意 10 條上限,先匯出備份)。
 
 ```json
-{
-  "name": "辦公室白名單",
-  "priority": 1,
-  "action": "allow",
-  "conditions": [{
-    "logic": "AND",
-    "conditions": [
-      {"field": "ip", "operator": "cidr", "value": ["203.0.113.0/24", "198.51.100.0/24"]}
-    ]
-  }]
-}
-```
-
-### 2. 封鎖整個國家
-
-```json
-{
-  "name": "封鎖俄朝伊",
-  "priority": 10,
-  "action": "block",
-  "blockStatus": 403,
-  "conditions": [{
-    "logic": "AND",
-    "conditions": [
-      {"field": "country", "operator": "in", "value": ["RU", "KP", "IR"]}
-    ]
-  }]
-}
-```
-
-### 3. 命中威脅情報庫即封
-
-```json
-{
-  "name": "已知惡意 IP",
-  "priority": 5,
-  "action": "block",
-  "conditions": [{
-    "logic": "AND",
-    "conditions": [
-      {"field": "ip", "operator": "threat"}
-    ]
-  }]
-}
-```
-
-### 4. API 速率限制
-
-```json
-{
-  "name": "API 速率限制",
-  "priority": 20,
-  "action": "rateLimit",
-  "rateLimitCount": 60,
-  "rateLimitWindow": 60,
-  "rateLimitBlock": 300,
-  "conditions": [{
-    "logic": "AND",
-    "conditions": [
-      {"field": "uri", "operator": "starts_with", "value": "/api/"}
-    ]
-  }]
-}
-```
-
-每 IP 1 分鐘 60 次,超過封 5 分鐘。
-
-### 5. 登入端點嚴格限速
-
-```json
-{
-  "name": "登入嚴格限速",
-  "priority": 15,
-  "action": "rateLimit",
-  "rateLimitCount": 5,
-  "rateLimitWindow": 60,
-  "rateLimitBlock": 1800,
-  "conditions": [{
-    "logic": "AND",
-    "conditions": [
-      {"field": "uri", "operator": "equals", "value": "/api/auth/login"},
-      {"field": "method", "operator": "equals", "value": "POST"}
-    ]
-  }]
-}
-```
-
-每 IP 1 分鐘 5 次,觸發封 30 分鐘。
-
-### 6. 防 Hotlink(熱連結盜圖)
-
-```json
-{
-  "name": "圖片防盜鏈",
-  "priority": 30,
-  "action": "block",
-  "blockStatus": 403,
-  "conditions": [{
-    "logic": "AND",
-    "conditions": [
-      {"field": "uri", "operator": "regex", "value": "\\.(jpg|jpeg|png|gif|webp)$"},
-      {"field": "referer", "operator": "starts_with", "value": "https://example.com", "negate": true},
-      {"field": "referer", "operator": "equals", "value": "", "negate": true}
-    ]
-  }]
-}
-```
-
-只允許 `https://example.com` 來源訪問圖片(空 Referer 也擋)。
-
-### 7. 海外可疑流量加挑戰
-
-```json
-{
-  "name": "海外加挑戰",
-  "priority": 40,
-  "action": "challenge",
-  "conditions": [{
-    "logic": "AND",
-    "conditions": [
-      {"field": "country", "operator": "equals", "value": "CN", "negate": true}
-    ]
-  }]
-}
-```
-
-### 8. WordPress / phpMyAdmin 路徑掃描器
-
-```json
-{
-  "name": "PHP 掃描器擋",
-  "priority": 5,
-  "action": "block",
-  "blockStatus": 404,
-  "conditions": [{
-    "logic": "OR",
-    "conditions": [
-      {"field": "uri", "operator": "ends_with", "value": ".php"},
-      {"field": "uri", "operator": "contains", "value": "/wp-admin/"},
-      {"field": "uri", "operator": "contains", "value": "/wp-login.php"},
-      {"field": "uri", "operator": "contains", "value": "/phpmyadmin/"}
-    ]
-  }]
-}
-```
-
-如果你用的不是 PHP / WordPress,所有這些 URL 都是掃描器探測。404 偽裝路徑不存在。
-
-### 9. 「只允許特定 ASN」
-
-```json
-{
-  "name": "只允許 ISP 訪問",
-  "priority": 100,
-  "action": "block",
-  "conditions": [{
-    "logic": "AND",
-    "conditions": [
-      {"field": "asn", "operator": "in", "value": [4134, 4837, 9808], "negate": true}
-    ]
-  }]
-}
-```
-
-`4134` = 中國電信,`4837` = 中國聯通,`9808` = 中國移動。其他 ASN 全擋。
-
-### 10. 「沒有 Cookie 就攔截特定路徑」
-
-```json
-{
-  "name": "需登入",
-  "priority": 25,
-  "action": "block",
-  "blockStatus": 401,
-  "conditions": [{
-    "logic": "AND",
-    "conditions": [
-      {"field": "uri", "operator": "starts_with", "value": "/dashboard/"},
-      {"field": "header:cookie", "operator": "contains", "value": "session_id=", "negate": true}
-    ]
-  }]
-}
+[
+  {
+    "name": "辦公室白名單",
+    "action": "allow",
+    "priority": 1,
+    "enabled": true,
+    "conditions": [{
+      "logic": "AND",
+      "conditions": [
+        { "field": "ip", "operator": "cidr", "value": ["203.0.113.0/24", "198.51.100.0/24"] }
+      ]
+    }]
+  },
+  {
+    "name": "命中威脅情報直接封",
+    "action": "block",
+    "blockStatus": 403,
+    "priority": 5,
+    "enabled": true,
+    "conditions": [{
+      "logic": "AND",
+      "conditions": [
+        { "field": "threatIntel", "operator": "in", "value": ["spamhaus_drop", "spamhaus_edrop", "firehol_level1"] }
+      ]
+    }]
+  },
+  {
+    "name": "Tor 出口節點走 5 秒盾",
+    "action": "uam",
+    "actionDurationSec": 600,
+    "priority": 8,
+    "enabled": true,
+    "conditions": [{
+      "logic": "AND",
+      "conditions": [
+        { "field": "threatIntel", "operator": "equals", "value": "tor_exit" }
+      ]
+    }]
+  },
+  {
+    "name": "禁止 .git / .env 訪問",
+    "action": "block",
+    "blockStatus": 404,
+    "blockBody": "Not Found",
+    "priority": 5,
+    "enabled": true,
+    "conditions": [{
+      "logic": "OR",
+      "conditions": [
+        { "field": "uri", "operator": "startsWith", "value": "/.git" },
+        { "field": "uri", "operator": "equals", "value": "/.env", "connector": "OR" },
+        { "field": "uri", "operator": "endsWith", "value": "/.env", "connector": "OR" }
+      ]
+    }]
+  },
+  {
+    "name": "登入端點嚴格限速",
+    "action": "rateLimit",
+    "rateLimitCount": 5,
+    "rateLimitWindow": 60,
+    "rateLimitBlock": 1800,
+    "priority": 15,
+    "enabled": true,
+    "conditions": [{
+      "logic": "AND",
+      "conditions": [
+        { "field": "uri", "operator": "startsWith", "value": "/api/auth/login" },
+        { "field": "method", "operator": "equals", "value": "POST", "connector": "AND" }
+      ]
+    }]
+  },
+  {
+    "name": "API 區段普通限速",
+    "action": "rateLimit",
+    "rateLimitCount": 60,
+    "rateLimitWindow": 60,
+    "rateLimitBlock": 300,
+    "priority": 20,
+    "enabled": true,
+    "conditions": [{
+      "logic": "AND",
+      "conditions": [
+        { "field": "uri", "operator": "startsWith", "value": "/api/" }
+      ]
+    }]
+  },
+  {
+    "name": "圖片防盜鏈",
+    "action": "block",
+    "blockStatus": 403,
+    "priority": 30,
+    "enabled": true,
+    "conditions": [{
+      "logic": "AND",
+      "conditions": [
+        { "field": "uri", "operator": "regex", "value": "\\.(jpg|jpeg|png|gif|webp)$" },
+        { "field": "referer", "operator": "startsWith", "value": "https://example.com", "negate": true, "connector": "AND" }
+      ]
+    }]
+  },
+  {
+    "name": "PHP / WordPress 掃描器擋",
+    "action": "block",
+    "blockStatus": 404,
+    "priority": 5,
+    "enabled": true,
+    "conditions": [{
+      "logic": "OR",
+      "conditions": [
+        { "field": "uri", "operator": "endsWith", "value": ".php" },
+        { "field": "uri", "operator": "contains", "value": "/wp-admin/", "connector": "OR" },
+        { "field": "uri", "operator": "contains", "value": "/wp-login.php", "connector": "OR" },
+        { "field": "uri", "operator": "contains", "value": "/phpmyadmin/", "connector": "OR" }
+      ]
+    }]
+  },
+  {
+    "name": "未帶 Bearer Token 擋管理 API",
+    "action": "block",
+    "blockStatus": 401,
+    "blockBody": "Unauthorized",
+    "priority": 25,
+    "enabled": true,
+    "conditions": [{
+      "logic": "AND",
+      "conditions": [
+        { "field": "uri", "operator": "startsWith", "value": "/api/admin/" },
+        { "field": "header", "headerName": "Authorization", "operator": "startsWith", "value": "Bearer ", "negate": true, "connector": "AND" }
+      ]
+    }]
+  },
+  {
+    "name": "全站 QPS > 6000 時加挑戰",
+    "action": "challenge",
+    "actionDurationSec": 300,
+    "priority": 90,
+    "enabled": true,
+    "conditions": [{
+      "logic": "AND",
+      "conditions": [
+        { "field": "requestRate", "operator": "gt", "value": 6000 }
+      ]
+    }]
+  }
+]
 ```
 
 ---
 
-## 八、威脅情報庫
+## 七、JSON 模式常見錯誤
 
-### 來源
-
-| 來源 | 內容 | 更新頻率 |
-|---|---|---|
-| `spamhaus_drop` | Spamhaus 全球已知惡意網段 | 4 小時 |
-| `spamhaus_edrop` | Extended DROP(更廣) | 4 小時 |
-| `firehol_level1` | FireHOL 一級惡意 IP(最嚴格) | 4 小時 |
-| `tor_exit` | Tor 出口節點 | 4 小時 |
-| `self_feedback` | 本平台 24h 高頻失敗 IP(自反饋) | 即時 |
-
-### 在 WAF 中使用
-
-```json
-{"field": "ip", "operator": "threat"}
-```
-
-任何來源命中即視為惡意。
-
-### 使用者唯讀瀏覽
-
-**儀表板 > 威脅情報庫**:
-
-- 搜尋 IP / CIDR
-- 過濾來源
-- 包含過期項(可選)
-- 限速 60 次 / 分鐘(防爬)
-
-### 管理員額外能做的
-
-- 手動加白(刪除某條惡意紀錄)
-- 立即觸發刷新拉所有來源
-- self_feedback 來源不會自動重加(避免循環)
+| 錯誤訊息 | 原因 |
+|---|---|
+| `JSON 格式錯誤: Unexpected token` | 多了 / 少了逗號、用了 trailing comma、雙引號漏掉 |
+| `頂層必須是規則物件` | JSON 模式單規則編輯時頂層必須是 `{...}`,不是 `[...]`(陣列請走批量匯入) |
+| `單條規則最多 5 個條件` | 整條規則所有 group 加總的 condition 數超過 5,拆規則 |
+| `動作無效` | `action` 不在 `block / allow / log / rateLimit / challenge / uam` 之中 |
+| `條件過大` | `JSON.stringify(conditions)` > 32 KB,正則太長或值列表太大,精簡 |
+| `已存在相同規則` | 後端去重防呆:同 `(name, conditions, action)` 拒絕。改 name 或微調 conditions |
+| `每個網站最多 10 條自訂 WAF 規則` | 達到 10 條上限,刪一條再加 |
 
 ---
 
-## 九、故障排查
+## 八、故障排查
 
 ### 規則寫了但不生效
 
 1. **域名 WAF 開了嗎**?域名編輯 > 基本設定 > WAF 開關
-2. **規則的 `enabled=true` 嗎**?
+2. **規則的 `enabled=true` 嗎**?(預設規則的開關欄位是 `defaultEnabled`)
 3. **優先級對嗎**?可能被前面的 `allow` 跳過了
 4. **看訪問日誌**:該請求的「WAF 命中規則」欄位,有就是命中,沒就是真的沒匹配上
-5. **field 拼寫**:`header:User-Agent` vs `header:user-agent`(後者才對,小寫)
+5. **field 拼寫**:用 `header` + `headerName: "User-Agent"`,不是 `header:user-agent`
 
 ### 誤封正常使用者
 
-1. 看訪問日誌篩選 status `403` / `429` / `503`
-2. 看哪條規則命中
+1. 看訪問日誌篩選 status `403` / `429`
+2. 找到哪條規則命中
 3. 改成 `log` 觀察一週,或加 `allow` 白名單
 4. 規則可能太嚴(如 SQL 注入規則誤判含 `select` 關鍵字的正常 query)
 
@@ -630,16 +633,16 @@ IP 落在 CIDR 範圍。`value` 為單一 CIDR 字串或字串陣列。
 
 ### Challenge 通過後又被擋
 
-- `challenge` cookie 30 分鐘有效;30 分鐘後再來會重新挑戰
-- 若使用者瀏覽器禁 cookie,會永遠在挑戰循環
+- 黏性 `actionDurationSec` 太短,QPS 抖動下重複觸發。設 60–600 秒
+- 使用者瀏覽器禁 cookie / 禁 JS,會永遠在挑戰循環
 
-### 規則太多影響性能
+### JSON 模式存檔後表單不一致
 
-- 預設規則跑全部 6 條 + 自訂規則:單次 WAF 評估 `<1ms`,通常不是瓶頸
-- 真有性能問題:減少 `regex` 規則,改用 `contains` / `starts_with`
-- `body` field 規則只在 POST/PUT 觸發,GET 不影響
+切到 JSON 模式編輯後存檔,內部欄位以 JSON 為準。
+重新打開規則時,後端載入的 conditions 字串會被解析回表單。
+若你寫了 form 不支援的欄位(例如未來新增的擴充),表單編輯時可能會被丟棄,
+要保留就**全程用 JSON 模式編輯**。
 
 ---
 
 > 看不到想要的場景?開工單講具體需求,我們幫你寫規則。
-
