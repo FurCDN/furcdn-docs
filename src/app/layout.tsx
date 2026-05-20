@@ -34,9 +34,9 @@ export const metadata: Metadata = {
     canonical: '/',
   },
   icons: {
-    icon: 'https://oss.furcdn.us/favicon.ico',
-    shortcut: 'https://oss.furcdn.us/favicon.ico',
-    apple: 'https://oss.furcdn.us/favicon.ico',
+    icon: 'https://oss.furcdn.us/furcdn_favicon.svg',
+    shortcut: 'https://oss.furcdn.us/furcdn_favicon.svg',
+    apple: 'https://oss.furcdn.us/furcdn_favicon.svg',
   },
   openGraph: {
     type: 'website',
