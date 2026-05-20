@@ -1,44 +1,69 @@
-# .
+# FurCDN 文檔
 
-This is a Next.js application generated with
-[Create Fumadocs](https://github.com/fuma-nama/fumadocs).
+[FurCDN](https://www.furcdn.us) 官方文檔站原始碼 —— 部署在 [docs.furcdn.us](https://docs.furcdn.us)。
 
-Run development server:
+以 [Next.js 16](https://nextjs.org) + [fumadocs](https://fumadocs.dev) 建構，內容以繁體中文撰寫，內建一鍵翻譯成英文。
+
+## 本地開發
 
 ```bash
-npm run dev
-# or
+pnpm install
 pnpm dev
-# or
-yarn dev
 ```
 
-Open http://localhost:3000 with your browser to see the result.
+開啟 http://localhost:3000 即可預覽。
 
-## Explore
+其他指令：
 
-In the project, you can see:
+```bash
+pnpm build         # 正式建置
+pnpm types:check   # 型別檢查 (fumadocs-mdx + next typegen + tsc)
+pnpm lint
+```
 
-- `lib/source.ts`: Code for content source adapter, [`loader()`](https://fumadocs.dev/docs/headless/source-api) provides the interface to access your content.
-- `lib/layout.shared.tsx`: Shared options for layouts, optional but preferred to keep.
+## 專案結構
 
-| Route                     | Description                                            |
-| ------------------------- | ------------------------------------------------------ |
-| `app/(docs)`              | The documentation layout and pages, served at the site root. |
-| `app/api/search/route.ts` | The Route Handler for search.                          |
+```
+content/docs/              # 文檔內容 (.mdx)
+src/
+├── app/
+│   ├── (docs)/            # 文檔路由 (網站根目錄)
+│   ├── api/search/        # 搜尋 API
+│   ├── llms.mdx/          # llms.txt 端點 (供 AI 抓取)
+│   ├── og/                # OG 圖動態生成
+│   └── layout.tsx
+├── components/
+│   ├── translate-button.tsx         # 導覽列「English」按鈕
+│   ├── translate-proxy-handler.tsx  # Google Translate proxy 內的點擊修正
+│   ├── view-options.tsx             # 自製 Open 下拉 (移除 GitHub/Scira AI)
+│   ├── footer.tsx
+│   └── mdx.tsx
+└── lib/
+    ├── source.ts          # fumadocs content source adapter
+    ├── layout.shared.tsx  # 共用 layout 設定 (navbar、links)
+    └── shared.ts          # 站點常數 (網址、appName)
+```
 
-### Fumadocs MDX
+## 特色
 
-A `source.config.ts` config file has been included, you can customise different options like frontmatter schema.
+- 繁體中文內容、`<html lang="zh-TW">`，瀏覽器會主動提示翻譯
+- 導覽列 **English** 按鈕：透過 Google Translate 翻譯目前頁面（含 `*.translate.goog` 內 SPA 路由修正）
+- TOC 採用 fumadocs `clerk` 樣式（彎曲滑動軌道）
+- `llms.mdx` / `llms.txt` 端點，方便 AI 抓取文檔
+- 自動生成 OG 圖 / Sitemap / robots
+- Vercel Analytics
 
-Read the [Introduction](https://fumadocs.dev/docs/mdx) for further details.
+## 撰寫文檔
 
-## Learn More
+於 `content/docs/` 新增 `.mdx`，frontmatter 與排序由 `meta.json` 控制。詳見：
 
-To learn more about Next.js and Fumadocs, take a look at the following
-resources:
+- [fumadocs MDX](https://fumadocs.dev/docs/mdx)
+- [fumadocs UI](https://fumadocs.dev/docs/ui)
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js
-  features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-- [Fumadocs](https://fumadocs.dev) - learn about Fumadocs
+## 部署
+
+Push 至 `main` 後由 Vercel 自動部署。
+
+## License
+
+文檔內容遵循 FurCDN 服務條款；網站程式碼 MIT。
