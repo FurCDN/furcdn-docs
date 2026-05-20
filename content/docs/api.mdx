@@ -16,6 +16,20 @@ description: "平台對外開放的 HTTP API,用於程式化控制 CDN(部署管
 
 三個 SDK 都實作了:列域名 / 刷快取 / 上傳憑證。Java、Kotlin 透過 [JitPack](https://jitpack.io) 安裝,完整 Gradle / Maven 範例見各倉庫 README。
 
+## GitHub Action
+
+[FurCDN/github-action](https://github.com/FurCDN/github-action) —— 在 GitHub Actions workflow 中直接呼叫 API,適合部署管線整合或 CI 自動刷快取。
+
+```yaml
+- uses: FurCDN/github-action@v1
+  with:
+    action: purge
+    api-key: ${{ secrets.FURCDN_API_KEY }}
+    domain-id: 123
+```
+
+支援 `purge`(刷快取)與 `upload-ssl`(上傳憑證)兩個動作,完整參數見[倉庫 README](https://github.com/FurCDN/github-action)。
+
 ---
 
 ## 一、API 金鑰管理
