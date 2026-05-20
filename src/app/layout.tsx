@@ -4,6 +4,7 @@ import { Inter, Noto_Sans_TC } from 'next/font/google';
 import type { Metadata } from 'next';
 import { Analytics } from '@vercel/analytics/next';
 import { appName, siteUrl } from '@/lib/shared';
+import { TranslateProxyHandler } from '@/components/translate-proxy-handler';
 
 const inter = Inter({
   subsets: ['latin'],
@@ -70,6 +71,7 @@ export default function Layout({ children }: LayoutProps<'/'>) {
       suppressHydrationWarning
     >
       <body className="flex flex-col min-h-screen">
+        <TranslateProxyHandler />
         <RootProvider>{children}</RootProvider>
         <Analytics />
       </body>
