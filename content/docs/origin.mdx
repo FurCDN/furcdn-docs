@@ -77,7 +77,7 @@ if (($_SERVER['HTTP_X_ORIGIN_SECRET'] ?? '') !== '你的密鑰') {
 
 **Caddy：**
 
-```caddy
+```text
 origin.example.com {
     @noSecret not header X-Origin-Secret "你的密鑰"
     respond @noSecret 403
