@@ -1,0 +1,185 @@
+---
+title: "回源鑑別與源站防護"
+description: "如何讓源站只接受來自 FurCDN 節點的回源請求 —— 推薦用自定義回源 Header，並提供回源 IP 公開 API 供防火牆白名單使用。"
+---
+接入 CDN 後，所有訪客流量都先打到 CDN 節點，節點再「回源」到你的源站取資料。若源站仍對全網開放，攻擊者只要拿到源站真實 IP，就能繞過 CDN（與 WAF / 緩存 / 防護）直連源站。
+
+本文說明兩種讓源站「只信任 FurCDN 回源」的方式：
+
+| 方式 | 原理 | 防偽造 | 推薦度 |
+|---|---|---|---|
+| **自定義回源 Header** | 節點回源時注入一個只有你和 CDN 知道的密鑰 header，源站校驗 | ✅ 強（密鑰不公開） | ⭐ **推薦** |
+| **回源 IP 白名單** | 源站防火牆只放行 CDN 節點 IP | ⚠️ 較弱（IP 公開可查，且需定期同步） | 補充手段 |
+
+<Callout title="兩種可疊加">
+最穩的做法是**兩者一起用**：防火牆先用 IP 白名單擋掉絕大多數掃描流量，再用自定義 Header 做最終身份校驗。但若只能選一個，**優先用自定義 Header** —— IP 會變、會被別人查到，Header 密鑰不會。
+</Callout>
+
+---
+
+## 方式一：自定義回源 Header（推薦）
+
+### 原理
+
+你在域名設定裡加一條只有你知道的密鑰 header（例如 `X-Origin-Secret: 一串隨機字串`）。CDN 節點每次回源都會自動帶上它，源站只要檢查這個 header 是否存在且值正確，就能確認「這個請求確實來自 FurCDN，不是有人直連」。
+
+因為密鑰不公開、不出現在任何對外 API，攻擊者無從偽造，所以比 IP 白名單可靠得多。
+
+### 設定步驟
+
+1. 自己生成一串夠長的隨機密鑰，例如：
+
+   ```bash
+   openssl rand -hex 32
+   # 例：b3f1c9a7e2d84f06a1c5e9b7d3f0a2c8...
+   ```
+
+2. 進入 **儀表板 > 域名管理 > 編輯域名 > 回源設定**，找到「**回源自定義 Header**」區塊，點「新增」：
+   - **Name**：`X-Origin-Secret`（名稱自取，但避開 `Host` / `Authorization` / `Date` / `X-Amz-Date` 等保留名稱）
+   - **Value**：上一步生成的隨機密鑰
+3. 儲存。節點會在後續所有回源請求注入此 header（最多可加 5 條）。
+
+### 源站校驗範例
+
+只放行帶正確密鑰的請求，其餘一律拒絕。
+
+**Nginx：**
+
+```nginx
+server {
+    listen 80;
+    server_name origin.example.com;
+
+    if ($http_x_origin_secret != "你的密鑰") {
+        return 403;
+    }
+
+    # ... 你的正常配置
+}
+```
+
+**Apache（.htaccess / vhost）：**
+
+```apache
+SetEnvIf X-Origin-Secret "^你的密鑰$" from_cdn
+Require env from_cdn
+```
+
+**PHP：**
+
+```php
+<?php
+if (($_SERVER['HTTP_X_ORIGIN_SECRET'] ?? '') !== '你的密鑰') {
+    http_response_code(403);
+    exit('Forbidden');
+}
+```
+
+**Caddy：**
+
+```caddy
+origin.example.com {
+    @noSecret not header X-Origin-Secret "你的密鑰"
+    respond @noSecret 403
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+<Callout title="密鑰保密" type="warn">
+這個密鑰等同於源站的「門禁卡」。不要寫進公開 repo、不要洩漏到日誌。懷疑外洩時，在域名設定改一個新值即可（節點下次回源立即生效）。
+</Callout>
+
+---
+
+## 方式二：回源 IP 白名單
+
+如果你的源站防火牆不方便校驗 header，可以改用 IP 白名單：只放行 FurCDN 節點的回源 IP。
+
+### 回源 IP 公開 API
+
+平台提供一個**公開、免鑑權**的端點，列出當前全部節點的回源 IP：
+
+```http
+GET https://www.furcdn.us/api/public/origin-ips
+```
+
+預設回傳 `text/plain`，**一行一個 IP**，方便直接灌進防火牆腳本：
+
+```bash
+curl -s https://www.furcdn.us/api/public/origin-ips
+```
+
+```
+1.2.3.4
+5.6.7.8
+9.10.11.12
+```
+
+也支援 JSON：
+
+```bash
+curl -s "https://www.furcdn.us/api/public/origin-ips?format=json"
+```
+
+```json
+{ "ips": ["1.2.3.4", "5.6.7.8", "9.10.11.12"], "count": 3 }
+```
+
+<Callout title="這份清單不是固定的" type="warn">
+節點會隨時新增、下線、更換 IP，**沒有固定的回源 IP 或 IP 段**。請**不要把它寫死**到防火牆，而要定期（建議每 **5~10 分鐘**）重新拉取並同步規則。否則節點換 IP 後，你的源站會把新節點的回源當成攻擊擋掉，導致網站打不開。
+
+清單已涵蓋 Anycast 節點的 unicast 回源出口 IP。
+</Callout>
+
+### 範例：定期同步到防火牆
+
+**ipset + iptables（Linux）—— 放進 cron 每 5 分鐘跑一次：**
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+# 建立 / 確保 ipset 存在
+ipset create furcdn hash:ip -exist
+ipset create furcdn_new hash:ip -exist
+ipset flush furcdn_new
+
+# 拉取最新回源 IP 填入暫存集合
+while read -r ip; do
+  [ -n "$ip" ] && ipset add furcdn_new "$ip" -exist
+done < <(curl -fsS https://www.furcdn.us/api/public/origin-ips)
+
+# 原子替換，避免同步空窗期把節點擋在外面
+ipset swap furcdn_new furcdn
+
+# 首次需掛一條規則（只放行 furcdn 集合 + 本機，其餘拒絕 80/443）
+# iptables -A INPUT -p tcp -m multiport --dports 80,443 -m set --match-set furcdn src -j ACCEPT
+# iptables -A INPUT -p tcp -m multiport --dports 80,443 -j DROP
+```
+
+**Nginx allow/deny（生成片段後 reload）：**
+
+```bash
+#!/bin/bash
+set -euo pipefail
+OUT=/etc/nginx/furcdn-allow.conf
+{
+  curl -fsS https://www.furcdn.us/api/public/origin-ips | sed 's/^/allow /; s/$/;/'
+  echo "deny all;"
+} > "$OUT.tmp" && mv "$OUT.tmp" "$OUT"
+nginx -t && nginx -s reload
+```
+
+在 `server {}` 內 `include /etc/nginx/furcdn-allow.conf;` 即可。
+
+<Callout title="IP 白名單的局限">
+回源 IP 是公開可查的，任何人都能拿到這份清單。所以 IP 白名單只能擋「不知道你源站 IP 的隨機掃描」，**擋不住刻意偽造來源的攻擊者**（雖然偽造 TCP 來源 IP 並不容易）。要真正鑑別身份，請搭配[方式一的自定義 Header](#方式一自定義回源-header推薦)。
+</Callout>
+
+---
+
+## 該選哪個？
+
+- **大多數人**：用**自定義 Header** 就夠了，設定一次、源站校驗一次，密鑰不變就一勞永逸。
+- **有防火牆運維能力、想多一層**：自定義 Header **疊加** IP 白名單（定期同步腳本）。
+- **不要**只靠 IP 白名單且把 IP 寫死 —— 節點換 IP 時網站會掛。

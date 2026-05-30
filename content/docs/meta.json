@@ -3,6 +3,7 @@
   "pages": [
     "index",
     "cdn",
+    "origin",
     "cache",
     "waf",
     "billing",
