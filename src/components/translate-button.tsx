@@ -27,6 +27,7 @@ const LANGUAGES: LangOption[] = [
   { code: 'zh-TW', label: '繁體中文',          flag: 'tw' },
   { code: 'en',    label: 'English',           flag: 'us' },
   { code: 'zh-CN', label: '简体中文',           flag: 'cn' },
+  { code: 'yue-hant', label: '粵語',            flag: 'hk' },
   { code: 'ja',    label: '日本語',             flag: 'jp' },
   { code: 'ko',    label: '한국어',             flag: 'kr' },
   { code: 'ru',    label: 'Русский',           flag: 'ru' },
