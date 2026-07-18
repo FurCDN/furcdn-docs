@@ -10,10 +10,15 @@ export function Footer({ className }: { className?: string }) {
     >
       <div className="mx-auto flex max-w-fd-container flex-col items-center gap-1 px-4 py-6 text-center text-xs">
         <p>
-          © 2023-2026{' '}
-          <span className="font-medium text-fd-foreground">
-            SLOWSPEED NETWORK LLC.
-          </span>{' '}
+          © 2022-2026{' '}
+          <a
+            href="https://taipei101.llc/"
+            target="_blank"
+            rel="noreferrer"
+            className="font-medium text-fd-foreground underline-offset-4 hover:underline"
+          >
+            Taipei101 Network
+          </a>{' '}
           版權所有
         </p>
         <p>

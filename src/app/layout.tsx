@@ -74,7 +74,7 @@ const websiteJsonLd = {
   inLanguage: 'zh-Hant',
   publisher: {
     '@type': 'Organization',
-    name: 'SLOWSPEED NETWORK LLC.',
+    name: 'Taipei101 Network',
     url: 'https://www.furcdn.us',
     logo: 'https://oss.furcdn.us/furcdn_favicon.svg',
   },
