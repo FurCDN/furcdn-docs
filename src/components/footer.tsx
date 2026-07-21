@@ -22,6 +22,9 @@ export function Footer({ className }: { className?: string }) {
           版權所有
         </p>
         <p>
+          9900 Corporate Campus Dr Ste 3000, Louisville, KY 40223, United States
+        </p>
+        <p>
           由{' '}
           <a
             href="https://langya.io"
