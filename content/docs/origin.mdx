@@ -131,6 +131,14 @@ curl -s "https://www.furcdn.us/api/public/origin-ips?format=json"
 清單已涵蓋 Anycast 節點的 unicast 回源出口 IP。
 </Callout>
 
+<Callout title="Anycast 出口可能有多個、且未必即時出現在 API" type="warn">
+同一個 Anycast 節點在底層可能有**多條 unicast 回源出口**（跨 upstream / 跨 PoP 的備援線路），新出口啟用後**不保證馬上**同步到這支公開 API，可能有數分鐘~數十分鐘的落差。
+
+這代表：**單靠 IP 白名單一定會誤報**（把合法回源當攻擊擋掉、觸發 403/連線重置，用戶側看起來就是「網站間歇性打不開」）。
+
+強烈建議**務必配合[方式一的自定義回源 Header](#方式一自定義回源-header推薦)**做身份校驗，IP 白名單只當成第一層粗篩，不要當成唯一鑑別依據。
+</Callout>
+
 ### 範例：定期同步到防火牆
 
 **ipset + iptables（Linux）—— 放進 cron 每 5 分鐘跑一次：**
