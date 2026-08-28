@@ -18,11 +18,17 @@ description: "平台對外開放的 HTTP API,用於程式化控制 CDN(部署管
 
 ## 官方 CLI
 
-[FurCDN/furcdn-cli](https://github.com/FurCDN/furcdn-cli) —— 命令列工具,封裝上述三個端點,適合本機操作或寫進部署腳本。
+[FurCDN/furcdn-cli](https://github.com/FurCDN/furcdn-cli) —— 命令列工具,涵蓋 API key 精簡版端點,也涵蓋登入後的完整版網域/帳務管理。
+
+CLI 支援兩種鑑權方式,依指令群組自動決定用哪一種:
+
+- **API Key**(`furcdn config set-key`):給 `/api/v1/**` 那幾支對外開放端點用,對應 `furcdn domains` / `furcdn ssl`,適合寫進部署腳本、CI 自動刷快取這類免互動場景。
+- **Session 登入**(`furcdn login`,OAuth device flow):給 `furcdn domain` / `furcdn account` 這兩組完整版指令用,適合日常手動操作。
 
 ```bash
 npm install -g @furcdn/cli
 
+# 方式一:API Key,適合腳本/CI
 furcdn config set-key fck_xxxxxxxx_xxxxxxxxxxxxxxxxxxxxxxxx
 furcdn domains list
 furcdn domains purge example.com
@@ -30,6 +36,39 @@ furcdn ssl upload example.com --cert fullchain.pem --key privkey.pem
 ```
 
 `domains purge` / `ssl upload` 都接受網域 ID 或網域名稱;加 `--json` 輸出機器可讀格式。設定存在 `~/.config/furcdn/config.json`,也可用 `FURCDN_API_KEY` / `FURCDN_API_BASE` 環境變數覆蓋。
+
+### 登入(OAuth device flow)
+
+日常手動操作(管理網域、快取規則、WAF、帳務等)建議用 `furcdn login`。CLI **不會**向你要密碼 —— 帳密只在瀏覽器裡輸入,走的是 [OAuth 2.0 Device Authorization Grant](https://datatracker.ietf.org/doc/html/rfc8628) 風格的流程,伺服器端對應 `POST /api/oauth/device/code`、`POST /api/oauth/device/token`、`POST /api/oauth/device/approve` 三支端點,以及瀏覽器核准頁 `/oauth/device`:
+
+```bash
+$ furcdn login
+請在瀏覽器開啟以下網址完成授權：
+  https://www.furcdn.us/oauth/device?user_code=ABCD-1234
+
+或前往 https://www.furcdn.us/oauth/device 手動輸入代碼：ABCD-1234
+
+等待授權中...
+...
+已登入：alice（alice@example.com）
+
+$ furcdn domain list
+$ furcdn account balance
+$ furcdn logout
+已登出。
+```
+
+流程:`furcdn login` 先呼叫 `/api/oauth/device/code` 拿到一組 `user_code`,接著嘗試自動開啟瀏覽器(偵測不到 GUI/桌面環境時靜默 fallback,網址一樣印在終端機上);使用者在瀏覽器裡確認核准後,CLI 依伺服器指定的 `interval` 輪詢 `/api/oauth/device/token`,拿到 token 就存進 `~/.config/furcdn/session.json`(權限 `0600`,比照 SSH key 的做法)。核准逾時(10 分鐘沒人操作)或在瀏覽器按拒絕,CLI 會印出清楚的錯誤並中止,重新執行 `furcdn login` 即可。
+
+`furcdn-cli` 刻意**不提供任何管理後台(admin)操作指令** —— 即使登入的帳號是 admin,CLI 也不給任何管理能力,伺服器端也有雙重防線(device flow 核發的 token 帶 `src="cli"` 標記,管理 API 一律拒絕)。管理功能請透過瀏覽器 dashboard 使用。
+
+### `furcdn domain`:完整版網域管理
+
+登入後可用的完整版指令,涵蓋網域 CRUD、回源/SNI/備援(`furcdn domain origin list/set/remove`)、TLS/HTTP 開關(`furcdn domain tls status/set`,控制 force-https/http2/ech)、SSL 憑證(`furcdn domain ssl request/status/upload/delete`)、快取規則(`furcdn domain cache-rules`)、WAF 規則(`furcdn domain waf`,含 `ip-check` 乾跑測試)、DNS 檢查(`furcdn domain dns-check`)與日誌查詢(`furcdn domain logs`)。
+
+### `furcdn account`:帳號自助服務
+
+`balance`/`topup`/`redeem`/`discount-preview`、`change-password`/`change-email`/`settings`/`audit-log`、`notify`、`oauth`、`passkeys`(僅管理既有列表,註冊需要瀏覽器 WebAuthn)、`api-keys`、`plan`(usage/history/auto-renew/buy/renew/upgrade)、`stats`、`alipay-verify`、`tickets`。
 
 ## GitHub Action
 
