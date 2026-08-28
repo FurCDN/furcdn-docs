@@ -16,6 +16,21 @@ description: "平台對外開放的 HTTP API,用於程式化控制 CDN(部署管
 
 三個 SDK 都實作了:列域名 / 刷快取 / 上傳憑證。Java、Kotlin 透過 [JitPack](https://jitpack.io) 安裝,完整 Gradle / Maven 範例見各倉庫 README。
 
+## 官方 CLI
+
+[FurCDN/furcdn-cli](https://github.com/FurCDN/furcdn-cli) —— 命令列工具,封裝上述三個端點,適合本機操作或寫進部署腳本。
+
+```bash
+npm install -g @furcdn/cli
+
+furcdn config set-key fck_xxxxxxxx_xxxxxxxxxxxxxxxxxxxxxxxx
+furcdn domains list
+furcdn domains purge example.com
+furcdn ssl upload example.com --cert fullchain.pem --key privkey.pem
+```
+
+`domains purge` / `ssl upload` 都接受網域 ID 或網域名稱;加 `--json` 輸出機器可讀格式。設定存在 `~/.config/furcdn/config.json`,也可用 `FURCDN_API_KEY` / `FURCDN_API_BASE` 環境變數覆蓋。
+
 ## GitHub Action
 
 [FurCDN/github-action](https://github.com/FurCDN/github-action) —— 在 GitHub Actions workflow 中直接呼叫 API,適合部署管線整合或 CI 自動刷快取。
