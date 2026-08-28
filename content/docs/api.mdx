@@ -44,9 +44,9 @@ furcdn ssl upload example.com --cert fullchain.pem --key privkey.pem
 ```bash
 $ furcdn login
 請在瀏覽器開啟以下網址完成授權：
-  https://www.furcdn.us/oauth/device?user_code=ABCD-1234
+  https://cdn.taipei/oauth/device?user_code=ABCD-1234
 
-或前往 https://www.furcdn.us/oauth/device 手動輸入代碼：ABCD-1234
+或前往 https://cdn.taipei/oauth/device 手動輸入代碼：ABCD-1234
 
 等待授權中...
 ...
@@ -135,7 +135,7 @@ fck_<8 hex prefix>_<24 hex secret>
 
 ```http
 GET /api/v1/domains HTTP/1.1
-Host: www.furcdn.us
+Host: cdn.taipei
 Authorization: Bearer fck_a1b2c3d4_xxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
@@ -143,7 +143,7 @@ curl 範例:
 
 ```bash
 curl -H "Authorization: Bearer fck_a1b2c3d4_xxxxxxxxxxxxxxxxxxxxxxxx" \
-     https://www.furcdn.us/api/v1/domains
+     https://cdn.taipei/api/v1/domains
 ```
 
 ### 驗證流程
@@ -325,7 +325,7 @@ jobs:
         run: |
           curl -fsS -X POST \
             -H "Authorization: Bearer $FURCDN_KEY" \
-            https://www.furcdn.us/api/v1/domains/123/purge
+            https://cdn.taipei/api/v1/domains/123/purge
 ```
 
 `FURCDN_KEY` 存 GitHub Secrets,**不要寫進 repo**。
@@ -344,7 +344,7 @@ curl -fsS -X POST \
   -H "Authorization: Bearer $FURCDN_KEY" \
   -H "Content-Type: application/json" \
   -d "$(jq -n --arg c "$CERT" --arg k "$KEY" '{cert: $c, key: $k}')" \
-  https://www.furcdn.us/api/v1/domains/$DOMAIN_ID/ssl
+  https://cdn.taipei/api/v1/domains/$DOMAIN_ID/ssl
 ```
 
 ### Python 一行刷快取
@@ -353,7 +353,7 @@ curl -fsS -X POST \
 import requests
 
 requests.post(
-    f"https://www.furcdn.us/api/v1/domains/{DOMAIN_ID}/purge",
+    f"https://cdn.taipei/api/v1/domains/{DOMAIN_ID}/purge",
     headers={"Authorization": f"Bearer {FURCDN_KEY}"},
     timeout=10,
 ).raise_for_status()
@@ -363,7 +363,7 @@ requests.post(
 
 ```js
 const r = await fetch(
-  `https://www.furcdn.us/api/v1/domains/${id}/purge`,
+  `https://cdn.taipei/api/v1/domains/${id}/purge`,
   {
     method: "POST",
     headers: { Authorization: `Bearer ${process.env.FURCDN_KEY}` },
