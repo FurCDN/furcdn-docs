@@ -64,7 +64,26 @@ $ furcdn logout
 
 ### `furcdn domain`:完整版網域管理
 
-登入後可用的完整版指令,涵蓋網域 CRUD、回源/SNI/備援(`furcdn domain origin list/set/remove`)、TLS/HTTP 開關(`furcdn domain tls status/set`,控制 force-https/http2/ech)、SSL 憑證(`furcdn domain ssl request/status/upload/delete`)、快取規則(`furcdn domain cache-rules`)、WAF 規則(`furcdn domain waf`,含 `ip-check` 乾跑測試)、DNS 檢查(`furcdn domain dns-check`)與日誌查詢(`furcdn domain logs`)。
+登入後可用的完整版指令,涵蓋網域 CRUD、回源/SNI/備援(`furcdn domain origin list/set/remove`)、源站擇優(`furcdn domain origin policy get/set`、`furcdn domain origin probes`)、TLS/HTTP 開關(`furcdn domain tls status/set`,控制 force-https/http2/ech)、SSL 憑證(`furcdn domain ssl request/status/upload/delete`)、快取規則(`furcdn domain cache-rules`)、WAF 規則(`furcdn domain waf`,含 `ip-check` 乾跑測試)、DNS 檢查(`furcdn domain dns-check`)與日誌查詢(`furcdn domain logs`)。
+
+源站擇優讓**每個節點**各自對各源站做 ICMP/TCP/HTTP 探測後,挑出對自己最快的源站(設定存在網域的 `originPolicy`)。底層對應 `GET/PUT /api/domains/{id}` 的 `originPolicy` 欄位與 `GET /api/domains/{id}/origin-probes`;這些是 **session 鑑權**的 dashboard API,不在公開的 `/api/v1/**` 內:
+
+```bash
+# 啟用擇優:strategy=latency
+furcdn domain origin policy set example.com --set strategy=latency
+
+# 只帶要改的欄位(伺服器淺合併保留其餘設定)
+furcdn domain update example.com --origin-strategy latency --switch-threshold 20 --min-hold 60
+
+# 檢視目前設定 / 各節點探測結果
+furcdn domain origin policy get example.com
+furcdn domain origin probes example.com
+
+# 重置為全部預設
+furcdn domain origin policy set example.com --reset
+```
+
+完整選項(策略、探測方式、遲滯、每源站權重/備用/探測目標等)與 ICMP 注意事項,見[回源鑑別與源站防護](/docs/origin)的「源站擇優」章節。
 
 ### `furcdn account`:帳號自助服務
 

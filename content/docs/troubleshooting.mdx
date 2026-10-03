@@ -431,7 +431,53 @@ hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 - 把源站綁到公網 IP / 域名
 - 真有內網需求 → 跟管理員申請(可能需要白名單)
 
+### Q27. 設了源站擇優,但一直只走同一個源站
+
+**症狀**:已設定多個源站,但訪問日誌的 `originUrl` 永遠是同一個,或 `origin-probes` 顯示每個節點都選同一個源站。
+
+**排查**:
+
+1. `furcdn domain origin policy get <域名>` —— `strategy` 是不是還是預設的 `failover`?擇優要 `latency` 才會依探測分數選路,`failover` 一律照 `origins` 順序打。
+2. 是不是只有一個**非備用**源站?`backup: true` 的源站只在其他源站全掛時才會被選中。
+3. `furcdn domain origin probes <域名>` —— 有沒有探測分數?有沒有節點把某個源站標成 `失敗`?
+4. 差距是否小於 `switchThresholdMs`(預設 20ms)?遲滯會讓分數接近時維持目前選中的源站,這是刻意設計,不是壞掉(見[源站擇優](/docs/origin))。
+5. 剛改完設定或節點剛啟動時,第一輪探測(預設 15 秒)完成前會先照配置順序走。
+
+**解法**:
+
+- 啟用擇優:`furcdn domain origin policy set <域名> --set strategy=latency`
+- 確認至少有兩個 `backup` 不為 true 的源站
+- 需要更積極切換時,調低 `--switch-threshold`(例如 5~10)
+
+### Q28. 源站探測全部逾時 / `origin-probes` 沒有資料
+
+**症狀**:`furcdn domain origin probes <域名>` 顯示 `尚無探測資料`,或所有節點的 RTT 都是失敗、分數為空。
+
+**排查**:
+
+1. 源站主機或雲廠商安全組是否擋掉 ICMP?節點是從自己的網路位置直接 ping 源站。
+2. `probeMethod` 設的是什麼?`icmp` 需要源站放行 ICMP;`tcp` 只需要探測埠可連。
+3. `probePort` / URL 內的埠是否正確?埠不通時 TCP/HTTP 探測一樣會失敗。
+4. 設了 `probeDisabled: true` 的源站不會有探測資料,這是預期行為。
+
+**解法**:
+
+- 在源站防火牆 / 安全組放行 CDN 節點的 ICMP(來源 IP 可用回源 IP 公開 API 取得)
+- 或改用 TCP 探測:`furcdn domain origin policy set <域名> --set probeMethod=tcp`
+- ICMP 不可用但 `probeFallback: true`(預設)時,節點會自動退回量測 TCP connect 時間,不必手動改
+
+### Q29. 源站一直換來換去(來回切換)
+
+**症狀**:訪問日誌的 `originUrl` 在兩個源站之間頻繁跳動,或 `originTrace` 顯示排序一直翻轉。
+
+**排查**:兩個源站的分數可能很接近,加上延遲抖動,導致「誰比較快」反覆變化。
+
+**解法**:
+
+- 調高遲滯門檻:`furcdn domain origin policy set <域名> --set switchThresholdMs=50 --set minHoldSec=120`
+- 需要固定偏好某個源站時,給它負的 `latencyBiasMs`(例如 `furcdn domain origin set <域名> --url http://a.example --latency-bias -30`),或改用 `ip_hash` 策略讓同一訪客固定走同一源站
+
 ---
 
-> 還是沒解決?開[工單](https://www.furcdn.us/dashboard/tickets)附上:**域名 / 訪問日誌 RAY-ID / 截圖 / 完整錯誤訊息**。
+> 還是沒解決?開[工單](https://cdn.taipei/dashboard/tickets)附上:**域名 / 訪問日誌 RAY-ID / 截圖 / 完整錯誤訊息**。
 

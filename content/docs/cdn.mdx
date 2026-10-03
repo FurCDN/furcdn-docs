@@ -35,6 +35,18 @@ FurCDN 是一款多節點 CDN 加速平台，支援 HTTP/HTTPS 加速、WAF 防�
 | SNI | 回源 TLS 握手使用的 Server Name（可選） |
 | Host Override | 回源時覆蓋 Host header（可選） |
 | OSS 金鑰 | 對象存儲源站的 AccessKey（可選） |
+| 權重 `weight` | `weighted`／`round_robin` 策略的權重（1~1000，預設 1） |
+| 備用 `backup` | 標記為備用源站：只在所有非備用源站都不可用時才使用（任何策略皆然） |
+| 探測目標 `probeHost` | ICMP/TCP 延遲探測的目標 hostname／IP，留空＝用源站 URL 的 host |
+| 延遲偏移 `latencyBiasMs` | 加到擇優分數上的固定偏移（-1000~10000；正值＝懲罰、負值＝偏好） |
+| 不探測 `probeDisabled` | 不對此源站做延遲探測；`latency` 策略下會排在有分數的源站之後 |
+
+多個源站時，可以啟用**源站擇優** —— 讓每個節點從自己的網路位置探測各源站延遲，各自挑出對它最快的源站（策略、探測方式、遲滯與完整選項見[回源鑑別與源站防護](/docs/origin)的「源站擇優」章節）：
+
+```bash
+furcdn domain origin policy set example.com --set strategy=latency
+furcdn domain origin probes example.com
+```
 
 ## WAF 防火牆
 

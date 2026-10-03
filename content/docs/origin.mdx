@@ -1,6 +1,6 @@
 ---
 title: "回源鑑別與源站防護"
-description: "如何讓源站只接受來自 FurCDN 節點的回源請求 —— 推薦用自定義回源 Header，並提供回源 IP 公開 API 供防火牆白名單使用。"
+description: "如何保護源站（自定義回源 Header、回源 IP 白名單），以及多源站時的源站擇優（每節點探測延遲後自動選路）設定。"
 ---
 接入 CDN 後，所有訪客流量都先打到 CDN 節點，節點再「回源」到你的源站取資料。若源站仍對全網開放，攻擊者只要拿到源站真實 IP，就能繞過 CDN（與 WAF / 緩存 / 防護）直連源站。
 
@@ -100,13 +100,13 @@ origin.example.com {
 平台提供一個**公開、免鑑權**的端點，列出當前全部節點的回源 IP：
 
 ```http
-GET https://www.furcdn.us/api/public/origin-ips
+GET https://cdn.taipei/api/public/origin-ips
 ```
 
 預設回傳 `text/plain`，**一行一個 IP**，方便直接灌進防火牆腳本：
 
 ```bash
-curl -s https://www.furcdn.us/api/public/origin-ips
+curl -s https://cdn.taipei/api/public/origin-ips
 ```
 
 ```
@@ -118,7 +118,7 @@ curl -s https://www.furcdn.us/api/public/origin-ips
 也支援 JSON：
 
 ```bash
-curl -s "https://www.furcdn.us/api/public/origin-ips?format=json"
+curl -s "https://cdn.taipei/api/public/origin-ips?format=json"
 ```
 
 ```json
@@ -155,7 +155,7 @@ ipset flush furcdn_new
 # 拉取最新回源 IP 填入暫存集合
 while read -r ip; do
   [ -n "$ip" ] && ipset add furcdn_new "$ip" -exist
-done < <(curl -fsS https://www.furcdn.us/api/public/origin-ips)
+done < <(curl -fsS https://cdn.taipei/api/public/origin-ips)
 
 # 原子替換，避免同步空窗期把節點擋在外面
 ipset swap furcdn_new furcdn
@@ -172,7 +172,7 @@ ipset swap furcdn_new furcdn
 set -euo pipefail
 OUT=/etc/nginx/furcdn-allow.conf
 {
-  curl -fsS https://www.furcdn.us/api/public/origin-ips | sed 's/^/allow /; s/$/;/'
+  curl -fsS https://cdn.taipei/api/public/origin-ips | sed 's/^/allow /; s/$/;/'
   echo "deny all;"
 } > "$OUT.tmp" && mv "$OUT.tmp" "$OUT"
 nginx -t && nginx -s reload
@@ -191,3 +191,200 @@ nginx -t && nginx -s reload
 - **大多數人**：用**自定義 Header** 就夠了，設定一次、源站校驗一次，密鑰不變就一勞永逸。
 - **有防火牆運維能力、想多一層**：自定義 Header **疊加** IP 白名單（定期同步腳本）。
 - **不要**只靠 IP 白名單且把 IP 寫死 —— 節點換 IP 時網站會掛。
+
+---
+
+## 源站擇優（多源站自動選路）
+
+一個網域可以設定 1 個主源站 + 多個備援源站，預設的 `failover` 策略是「照 `origins` 陣列順序打，失敗才換下一個」。問題是：對每個節點而言，陣列裡的第一個源站未必最快 —— 香港節點打香港源站可能只要 10ms，打美西源站卻要 150ms。
+
+**源站擇優**讓**每個節點**從自己的網路位置對各源站做延遲探測，各自挑出對自己最快的源站。這跟「master 集中決定一個最佳源站」不同：節點分散在全球，只有節點自己才知道哪條路徑最快。
+
+設定存在網域的 `originPolicy`（一個 JSON 物件）：
+
+- `failover`（預設）＝維持現行行為，不啟用擇優。
+- `latency`＝依探測分數擇優，這是最常用的設定。
+- 其餘策略（`round_robin` / `weighted` / `random` / `ip_hash`）不需要探測也能運作；`probeAlways` 可讓它們「只觀測、不影響選路」。
+
+### 為什麼用 ICMP
+
+ICMP echo（ping）是最輕量的 RTT 量測方式：不需要源站跑任何應用層邏輯、不佔用 HTTP 連線、每輪只送幾個封包。節點每輪對每個源站送 `probeCount` 個封包，取平均 RTT 當作該輪分數，丟包率則用來懲罰。
+
+若環境不允許 ICMP，也可以改用 TCP connect 時間（`probeMethod: tcp`）或 HTTP HEAD（`probeMethod: http`）。
+
+### 選路策略
+
+| strategy | 行為 |
+|---|---|
+| `failover` | **預設**。依 `origins` 陣列順序嘗試，失敗才換下一個；`backup: true` 的源站一律排到最後。 |
+| `latency` | 依最近 `scoreWindow` 輪的探測分數擇優（分數越低越好）。**啟用探測**。 |
+| `round_robin` | 輪流使用所有非備用源站，`weight` 影響分配比例。 |
+| `weighted` | 依每個源站的 `weight` 加權隨機挑選。 |
+| `random` | 隨機挑一個非備用源站。 |
+| `ip_hash` | 依 `hashKey`（`client_ip` 或 `uri`）雜湊，把同一個訪客（或同一個 URI）固定導到同一個源站，藉此提高源站快取命中。 |
+
+<Callout title="備用源站（backup）">
+不論哪一種策略，`backup: true` 的源站都只在「所有非備用源站都不可用」時才會被使用，適合放只在災難時才啟用的冷備援。
+</Callout>
+
+### 完整選項（originPolicy）
+
+所有欄位都有預設值，**只需要帶要改的欄位**：未帶的欄位沿用目前設定（伺服器淺合併後整體驗證），全新網域則套預設。
+
+| 欄位 | 型別 / 範圍 | 預設 | 說明 |
+|---|---|---|---|
+| `strategy` | `failover` / `latency` / `round_robin` / `weighted` / `random` / `ip_hash` | `failover` | 選路策略，見上表 |
+| `probeMethod` | `icmp` / `tcp` / `http` | `icmp` | 探測方式 |
+| `probeFallback` | bool | `true` | ICMP 不可用（無 raw socket 權限，或目標徹底擋掉 ICMP）時，退回用 TCP connect 時間 |
+| `probeIntervalSec` | 整數 5~3600 | `15` | 每輪探測間隔秒數 |
+| `probeTimeoutMs` | 整數 200~10000 | `2000` | 單一探測封包的逾時毫秒 |
+| `probeCount` | 整數 1~10 | `3` | 每輪送幾個封包；RTT 取該輪平均，丟包率為該輪遺失比例 |
+| `probePort` | 整數 1~65535 或 `null` | `null` | TCP/HTTP 探測埠；`null` 表示依 URL scheme（`http`→80、`https`→443）或 URL 內指定的埠 |
+| `probePath` | 以 `/` 開頭的字串，≤256 字元 | `/` | HTTP 探測路徑（送 HEAD，回應 &lt;500 視為成功） |
+| `probeAlways` | bool | `false` | 非 `latency` 策略時也持續探測並上報（只用於觀測，不影響選路） |
+| `scoreWindow` | 整數 1~30 | `5` | 分數＝最近 N 輪 RTT 的平均 |
+| `lossPenaltyMs` | 整數 0~5000 | `1000` | 分數公式：`avgRtt + 丟包率(0~1) × lossPenaltyMs + origin.latencyBiasMs` |
+| `maxLatencyMs` | 整數 0~30000 | `0` | 大於 0 時，分數高於此值的源站會被排到最後（仍保留在 failover 鏈中，不會被剔除） |
+| `switchThresholdMs` | 整數 0~5000 | `20` | 遲滯：新最優者必須比目前選中的源站好至少這麼多毫秒才切換 |
+| `minHoldSec` | 整數 0~3600 | `30` | 切換後至少維持這麼久才允許再次切換 |
+| `hashKey` | `client_ip` / `uri` | `client_ip` | `ip_hash` 策略使用的雜湊鍵 |
+| `retryStatuses` | 整數陣列（400~599，最多 20 個） | `[]` | 空陣列＝所有 5xx 都觸發換源；非空＝只有清單內的狀態碼才觸發 |
+| `retryOnError` | bool | `true` | 連線失敗／逾時是否觸發換源 |
+| `maxAttempts` | 整數 0~10 | `0` | 單一請求最多嘗試幾個源站；0＝不限（最多嘗試所有源站） |
+
+### 每個源站的選項
+
+除了 URL / 類型 / SNI / Host override 之外，`origins[]` 陣列裡的每個源站另外支援：
+
+| 欄位 | 範圍 | 預設 | 說明 |
+|---|---|---|---|
+| `weight` | 整數 1~1000 | `1` | `weighted` / `round_robin` 的權重 |
+| `backup` | bool | `false` | `true`＝備用：只在所有非備用源站都不可用時才使用（任何策略皆然） |
+| `probeHost` | hostname / IP 或空字串 | `""` | ICMP/TCP 探測的目標；空＝用源站 URL 的 host。與源站 URL 適用同等的內網 / 保留位址檢查（非管理員不得指向私網） |
+| `latencyBiasMs` | 整數 -1000~10000 | `0` | 加到分數上的固定偏移：正值＝懲罰、負值＝偏好 |
+| `probeDisabled` | bool | `false` | 不探測此源站；`latency` 策略下會排在有分數的源站之後 |
+
+### 探測與 ICMP 注意事項
+
+<Callout title="源站與中間防火牆需放行 ICMP" type="warn">
+節點是從自己的網路位置直接對源站送 ICMP echo。如果**源站主機**或**中間的雲防火牆 / 安全組**擋掉 ICMP，探測會全部逾時。
+
+此時若 `probeFallback: true`（預設），節點會自動退回量測 **TCP connect** 時間；若 TCP 也不通（埠沒開、防火牆擋），該源站會被視為不可用。建議：
+
+- 在源站安全組放行 CDN 節點的 ICMP（來源可用上方「方式二」的回源 IP 公開 API 取得）；
+- 或直接把 `probeMethod` 設成 `tcp`（例如源站只開 443 時）。
+</Callout>
+
+- **剛啟動、還沒有探測資料時**，節點會先依配置順序選路，等第一輪探測完成（預設 15 秒）後才切換到擇優結果。
+- **設定變更後**（新增 / 修改源站），節點會立即對受影響的源站補跑一輪探測，不必等下一輪間隔。
+- **被判定為故障的源站**會被既有健康檢查機制暫時排除；若全部源站都被判定故障，則 fail-open（照樣嘗試），避免整體 502。
+
+### 遲滯（hysteresis）：避免源站一直換來換去
+
+延遲是會抖動的。如果只要「B 比 A 快 0.5ms」就切換，兩個源站分數接近時會不停來回切，反而製造更多回源連線與快取碎片。因此擇優加了兩道剎車：
+
+- `switchThresholdMs`（預設 20ms）：新最優者必須比**目前選中者**好至少這麼多才切換。
+- `minHoldSec`（預設 30 秒）：切換後至少維持這麼久，期間不再切。
+
+**範例**：目前選中源站 A，分數 45.0ms。
+
+| 情境 | 候選 B 分數 | 差距 | 結果 |
+|---|---|---|---|
+| 1 | 40.0ms | 5ms &lt; 20ms | **維持 A**（差距不足門檻） |
+| 2 | 22.0ms | 23ms ≥ 20ms | **切換到 B**，並在接下來 30 秒內不再切換 |
+| 3 | 兩者分數都高於 `maxLatencyMs`（若設為 3000） | — | 兩者都被排到最後，但仍按分數排序 |
+
+### 存取日誌欄位
+
+啟用擇優後，每筆存取日誌會多帶：
+
+| 欄位 | 說明 |
+|---|---|
+| `originUrl` | 最終實際回應的源站 URL（已遮蔽 userinfo） |
+| `originRttMs` | 該源站在當下的探測分數（毫秒）；沒有探測資料時省略 |
+| `originStrategy` | 這次請求使用的策略 |
+
+`originTrace` 會在最前面帶上策略與候選排序，例如：
+
+```
+擇優(icmp) 源站2 12.3ms > 源站1 45.0ms ｜ 源站2 http://b → HTTP 200
+```
+
+意思是：這次用 ICMP 擇優，候選排序為「源站2（12.3ms）優於源站1（45.0ms）」，最終由源站2 回應，HTTP 200。
+
+### 透過 API 設定
+
+擇優設定屬於**登入後**的 dashboard API（session 鑑權，與 CLI `furcdn login` 用的是同一套），不在對外開放的 `/api/v1/**` API key 端點內。
+
+```bash
+# 讀取目前設定（GET /api/domains 回傳 { domains: [...] }，每筆含 originPolicy）
+curl -s https://cdn.taipei/api/domains \
+  -H "Cookie: furcdn_token=<session>" | jq '.domains[] | select(.id==123) | .originPolicy'
+
+# 只改 strategy 等欄位（伺服器會淺合併既有設定後整體驗證）
+curl -s -X PUT https://cdn.taipei/api/domains/123 \
+  -H 'content-type: application/json' \
+  -H 'Cookie: furcdn_token=<session>' \
+  -d '{"originPolicy":{"strategy":"latency","probeMethod":"icmp","switchThresholdMs":20}}'
+
+# 重置為全部預設
+curl -s -X PUT https://cdn.taipei/api/domains/123 \
+  -H 'content-type: application/json' \
+  -H 'Cookie: furcdn_token=<session>' \
+  -d '{"originPolicy":null}'
+
+# 各節點最近一輪的探測結果（RTT / 丟包 / 該節點選中的源站）
+curl -s https://cdn.taipei/api/domains/123/origin-probes \
+  -H "Cookie: furcdn_token=<session>"
+```
+
+`origin-probes` 的回應格式：
+
+```json
+{
+  "nodes": [
+    {
+      "nodeId": 7,
+      "nodeName": "hk-1",
+      "ts": 1735689600000,
+      "origins": [
+        { "url": "http://a.example", "method": "icmp", "rttMs": 12.3, "lossPct": 0, "ok": true, "selected": true, "ts": 1735689600000 },
+        { "url": "http://b.example", "method": "icmp", "rttMs": 45.0, "lossPct": 0, "ok": true, "selected": false, "ts": 1735689600000 }
+      ]
+    }
+  ]
+}
+```
+
+超過 15 分鐘沒有回報的節點不會出現在清單中。
+
+### 透過 CLI 設定
+
+```bash
+# 啟用擇優（只改 strategy，其餘沿用預設）
+furcdn domain origin policy set example.com --set strategy=latency
+
+# 或等價的旗標寫法
+furcdn domain update example.com --origin-strategy latency --probe-method icmp --switch-threshold 20
+
+# 檢視生效中的完整設定（未自訂的欄位標為「預設」）
+furcdn domain origin policy get example.com
+
+# 調整單一源站：權重、備用、探測目標、不探測
+furcdn domain origin set example.com --url http://b.example --backup --weight 3 --probe-host 1.2.3.4
+furcdn domain origin set example.com --url http://c.example --latency-bias -50 --no-probe
+furcdn domain origin list example.com
+
+# 看各節點的探測結果（表格 / --json）
+furcdn domain origin probes example.com
+
+# 重置為全部預設
+furcdn domain origin policy set example.com --reset
+```
+
+### 排查
+
+- **一直只走同一個源站**：確認 `strategy` 已是 `latency`（預設是 `failover`），且該網域有多個非備用源站。
+- **探測全部逾時 / 分數都是空的**：先確認源站放行 ICMP；不放行就把 `probeMethod` 改成 `tcp`。
+- **源站一直換來換去**：調高 `switchThresholdMs`（例如 50）與 `minHoldSec`（例如 120）。
+- 更多症狀見「常見問題排查」。
