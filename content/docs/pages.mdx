@@ -1,0 +1,456 @@
+---
+title: "FurCDN Pages（內測）"
+description: "免費靜態網站託管：每位使用者 100MB、單站 20MB、請求數不限，流量併入套餐月配額。支援 Dashboard、CLI 與 GitHub Action 部署。"
+---
+
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+FurCDN Pages 讓你直接把靜態網站（HTML / CSS / JS / 圖片等）上傳到 FurCDN，由邊緣節點直接對外服務，不需要自己維護伺服器、Nginx 或物件儲存。每個站台自動取得 `<slug>.pages.furcdn.top` 網址與 TLS 憑證，部署完成後最多 60 秒內全網生效。
+
+<Callout title="內測中，需內測碼" type="warn">
+Pages 目前為內測功能，**必須先兌換內測碼**才能使用。內測期間功能、配額與網域規則可能調整，且不提供服務水準保證（SLA）；請勿把 Pages 用在唯一的正式服務上。
+</Callout>
+
+## 一、這是什麼
+
+| 適合 | 不適合 |
+|---|---|
+| 文件站、部落格、產品介紹頁 | 需要伺服器端邏輯（PHP / Node / Python…） |
+| 前端框架輸出的靜態檔（Next.js `export`、Vite、Astro…） | 需要資料庫或 API 的動態網站 |
+| 專案展示、活動頁、履歷頁 | 需要自訂網域（目前尚未支援） |
+| 由 CI 自動部署的靜態產物 | 大量檔案或超過 20MB 的站台 |
+
+Pages 只提供**靜態檔案**：沒有 SSR、沒有 Functions / Workers、沒有反向代理，也不支援 `_redirects` / `_headers`。你在本機 `build` 出什麼，節點就服務什麼。
+
+## 二、內測碼與開通
+
+內測期間不開放自助申請。內測碼由管理員於後台批次產生後發放，格式為 `PGB-XXXX-XXXX-XXXX`。
+
+### 兌換方式
+
+**Dashboard**：登入後點側邊欄「Pages」，在輸入框填入內測碼即可。入口對**所有使用者**可見，未開通時只會看到兌換畫面。
+
+**CLI**：
+
+```bash
+furcdn pages beta redeem PGB-XXXX-XXXX-XXXX
+furcdn pages beta status
+```
+
+**API**：`POST /api/v1/pages/beta/redeem`，詳見[開放 API](/api)。
+
+兌換成功後會建立使用權（`PagesAccess`）。規則如下：
+
+- 每個內測碼有使用次數上限，用完為止；過期或停用的碼無法兌換。
+- 已開通者再次兌換會直接回成功，**不會消耗**另一組碼。
+- 每使用者、每 IP 每小時最多嘗試 10 次；無效 / 用盡 / 過期 / 停用一律回 `pages_beta_invalid`。
+- 被管理員封禁 Pages 的帳號不可再兌換，所有 Pages API 回 `403 pages_banned`。
+- 未開通時，除了站台概況（供 UI 判斷是否顯示兌換畫面）與兌換端點，其餘 Pages API（含 CLI / GitHub Action / `/api/v1`）一律回 `403 pages_beta_required`。
+
+<Callout title="內測碼遺失或無法兌換">
+請透過[工單](/dashboard/tickets)聯絡管理員，並附上帳號 email 與取得的碼。內測碼無法自行補發。
+</Callout>
+
+## 三、配額與計費
+
+Pages 的**容量**免費，**流量**則與你的 FurCDN 套餐共用。
+
+| 項目 | 限制 |
+|---|---|
+| 每位使用者總容量 | **100MB**（所有站台「上線中」deployment 的檔案大小總和） |
+| 單站容量 | **20MB**（單一 deployment 解壓後總和；單一檔案同樣受此限） |
+| 站台數量 | **10 站** / 使用者 |
+| 每月請求數 | **不限**（僅記錄統計，不計費、不設上限） |
+| 流量 | 併入套餐當月流量配額（網域流量 + Pages 流量） |
+| 上傳壓縮檔 | ≤ **25MB** |
+| 單一 deployment 檔案數 | ≤ **2000** |
+| 單一路徑長度 | ≤ **255** 字元 |
+| deployment 保留數 | 每站 **5 筆** |
+
+### 容量怎麼算
+
+- 只有**目前上線中**的 deployment 計入 100MB；非上線的舊版、預覽版不計入。
+- 每站最多保留 5 筆 deployment 檔案；超過時自動刪除**最舊且非上線中**的那筆。上線中的版本不會被自動刪除，也無法手動刪除。
+- 部署新版本、或把舊版重新上線（rollback）時，若會讓總容量超過 100MB，API 回 `413 pages_quota_exceeded`，並附上 `usedBytes` / `limitBytes`。
+
+### 流量與套餐
+
+Pages 的位元組會與網域流量一起計算：當月用量 = 網域流量（`DailyStat`）+ Pages 流量（`PagesDailyStat`），上限為套餐的 `bandwidthGbMonth`。每月 1 號台灣時間 00:00 重新計算。
+
+以下任一情況，Pages 站台會回 **503「此網站暫時停用」**（與網域超量同一套規則）：
+
+- 沒有任何有效套餐；
+- 套餐已過期；
+- 當月流量已超過套餐配額（`bandwidthGbMonth` > 0 才限制）；
+- 帳號被管理員封禁 Pages。
+
+補救方式與網域相同：購買 / 續費 / 升級套餐，或等月初自動重置。詳細計費規則見[計費與套餐](/billing)。
+
+<Callout title="請求數不限，但不等於可以濫用">
+Pages 不計算請求次數，但仍受平台可接受使用條款與反濫用機制約束。拿 Pages 當檔案分享站、串流來源或攻擊跳板，會被停用。
+</Callout>
+
+## 四、網域
+
+每個站台會拿到兩類網址（`<base>` 目前為 `pages.furcdn.top`）：
+
+| 用途 | 網址 |
+|---|---|
+| 正式（上線中版本） | `https://<slug>.pages.furcdn.top` |
+| 預覽（指定 deployment） | `https://<slug>--<previewKey>.pages.furcdn.top` |
+
+- `<slug>` 是站台代稱，長度 3–40，只允許小寫字母、數字與 `-`，且**不可包含 `--`**（`--` 保留給預覽網址分隔）。
+- `www`、`api`、`admin`、`dashboard`、`docs`、`status`、`mail`、`cdn`、`pages` 等保留字，以及 `paypal`、`apple`、`google`、`microsoft`、`alipay`、`wechat`、`bank` 等高風險品牌字樣不可使用（`pages_bad_slug`）。
+- `previewKey` 由系統產生（8 位十六進位），每筆 deployment 一個；預覽網址只服務該站台的 deployment，並附帶 `X-Robots-Tag: noindex`。
+- TLS 由平台提供的萬用字元憑證自動涵蓋，不需自行上傳。
+- **目前不支援自訂網域**（綁定自己的 `example.com` 尚未開放）。
+
+<Callout title="為什麼不是 cdn.taipei 的子網域">
+使用者內容刻意放在獨立的 registrable domain（`pages.furcdn.top`），與主站 `cdn.taipei` 隔離，避免 cookie tossing、同站腳本等跨站風險。這是刻意的設計，目前沒有改用 `*.cdn.taipei` 的計畫。
+</Callout>
+
+## 五、快速開始
+
+<Tabs items={['Dashboard', 'CLI', 'GitHub Action']}>
+  <Tab value="Dashboard">
+    <Steps>
+      <Step>
+        ### 兌換內測碼
+
+        登入後點側邊欄「Pages」，輸入內測碼。開通後會看到用量條（100MB）與站台列表。
+      </Step>
+      <Step>
+        ### 建立站台
+
+        點「建立站台」，填入 slug（例如 `my-site`）與 production branch（預設 `main`）。slug 一經使用即全站唯一，之後不可修改。
+      </Step>
+      <Step>
+        ### 上傳檔案
+
+        可直接選 `.zip`，或選一個資料夾（瀏覽器會用 `fflate` 在本地打包成 zip）。上傳前會在瀏覽器先檢查 20MB 上限。
+
+        <Callout title="壓縮檔根目錄">
+        `index.html` 必須在壓縮檔**根目錄**。請打包 `dist/` 裡的內容，而不是把 `dist/` 資料夾本身包進去 —— 平台不會自動剝除最外層的共同目錄。
+        </Callout>
+      </Step>
+      <Step>
+        ### 完成
+
+        部署成功後即可用 `https://<slug>.pages.furcdn.top` 開啟。站台詳情頁可看到 deployment 列表、預覽連結、rollback（重新上線舊版）與刪除。
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab value="CLI">
+    Pages 指令需要 `@furcdn/cli` **0.3.0 以上**。
+
+    ```bash
+    npm install -g @furcdn/cli
+
+    # 方式一：互動登入（session）
+    furcdn login
+
+    # 方式二：CI / 腳本用 API key
+    export FURCDN_API_KEY=fck_xxxxxxxx_xxxxxxxxxxxxxxxxxxxxxxxx
+    ```
+
+    ```bash
+    # 兌換內測碼
+    furcdn pages beta redeem PGB-XXXX-XXXX-XXXX
+
+    # 建立站台（也可在第一次 deploy 時加 --create）
+    furcdn pages create my-site
+
+    # 部署：把 ./dist 的內容打包成 tar.gz 上傳
+    furcdn pages deploy ./dist --site my-site --create
+    ```
+
+    `deploy` 會先在本機檢查 20MB、檔案數與根目錄 `index.html`，再打包成 tar.gz（預設忽略 `.git`、`node_modules`、`.DS_Store`）。指定 `--branch` 時，只有等於 production branch 的部署會自動上線，其餘僅產生預覽版。
+
+    ```bash
+    # 部署到非 production 分支 → 只會產生預覽
+    furcdn pages deploy ./dist --site my-site --branch preview --message "測試新版"
+
+    # 列出站台 / 版本
+    furcdn pages list
+    furcdn pages deployments my-site
+
+    # Rollback：把指定版本重新上線
+    furcdn pages activate my-site 42
+
+    # 刪除版本 / 刪除站台
+    furcdn pages rm-deployment my-site 42
+    furcdn pages delete my-site
+
+    # 用量與內測狀態
+    furcdn pages usage
+    furcdn pages beta status
+    ```
+
+    所有 `furcdn pages` 指令都支援 `--json`，適合寫進腳本。完整指令表見[開放 API](/api)。
+  </Tab>
+  <Tab value="GitHub Action">
+    把 API key 存成 repository secret（例如 `FURCDN_API_KEY`），在建置完成後呼叫 Action：
+
+    ```yaml
+    name: Deploy Pages
+
+    on:
+      push:
+        branches: [main]
+
+    jobs:
+      deploy:
+        runs-on: ubuntu-latest
+        steps:
+          - uses: actions/checkout@v4
+
+          - uses: actions/setup-node@v4
+            with:
+              node-version: 20
+
+          - run: npm ci
+          - run: npm run build
+
+          - id: pages
+            uses: FurCDN/github-action@v1
+            with:
+              action: pages-deploy
+              api-key: ${{ secrets.FURCDN_API_KEY }}
+              site: my-site
+              dir: dist
+              branch: ${{ github.ref_name }}
+              message: ${{ github.event.head_commit.message }}
+              create-site: 'true'
+
+          - run: echo "預覽：${{ steps.pages.outputs.preview-url }}"
+    ```
+
+    參數：
+
+    | 輸入 | 必填 | 說明 |
+    |---|---|---|
+    | `action` | ✅ | 固定 `pages-deploy` |
+    | `api-key` | ✅ | `fck_…`，存 GitHub Secrets |
+    | `site` | ✅ | 站台 slug |
+    | `dir` | — | 要部署的目錄，預設 `dist` |
+    | `branch` | — | 分支名稱；建議 `${{ github.ref_name }}`。留空則由伺服器使用站台的 production branch |
+    | `message` | — | 版本說明 |
+    | `create-site` | — | `true` 時站台不存在會自動建立，預設 `false` |
+    | `base-url` | — | API base，預設 `https://cdn.taipei` |
+
+    Action 會用 `tar -czf` 打包（排除 `.git`、`node_modules`、`.DS_Store`）、在本機檢查 20MB，再以 `application/gzip` 上傳。HTTP 非 2xx 時會以 `::error::` 失敗並印出錯誤碼。
+
+    | 輸出 | 說明 |
+    |---|---|
+    | `result` | API 原始 JSON |
+    | `deployment-id` | 這次部署的 ID |
+    | `url` | 站台的正式網址 |
+    | `preview-url` | 該版本的預覽網址 |
+    | `status` | deployment 狀態（`ready` / `held`；`held` 需管理員核准後才上線） |
+  </Tab>
+</Tabs>
+
+## 六、檔案與路由規則
+
+### 上傳格式
+
+`POST` body 是**原始壓縮檔位元組**（不是 multipart）。平台依 magic bytes 判斷格式：
+
+- gzip（`1f 8b`）→ 視為 tar.gz；
+- ZIP（`50 4b 03 04`）→ 視為 zip；
+- 其他 → `400 pages_bad_archive`。
+
+解壓時的安全限制：只接受一般檔案（目錄會略過；遇到 symlink / hardlink / 裝置檔直接拒絕）、解壓後總和 ≤ 20MB、檔案數 ≤ 2000、路徑 ≤ 255 字元，且路徑不得包含 `..`、絕對路徑、NUL 或反斜線。
+
+**根目錄必須有 `index.html`**，否則回 `400 pages_no_index`。最外層若只有單一共同目錄（例如 `dist/`），平台**不會**自動剝除，請在打包時就進入該目錄打包內容。
+
+### 路徑解析順序
+
+請求 `/about` 時，依序嘗試：
+
+1. `about`（若真是一個檔案）
+2. `about/index.html`
+3. `about.html`
+
+都找不到時：
+
+- 有 `404.html` → 以 HTTP 404 回傳 `404.html`；
+- 否則回平台內建的 404 頁。
+
+其他規則：
+
+- 目錄請求若缺少結尾斜線、但存在 `<path>/index.html`，回 **308** 導向 `<path>/`（保留 query string）。
+- 任何路徑區段以 `.` 開頭一律 404，**唯一例外是 `.well-known`**。
+- 不支援 `_headers` 與 `_redirects`：這兩個檔案不會被解讀，寫了也不會生效。
+- 不支援伺服器端程式碼（PHP / Node / Python）、SSR、Functions / Workers、URL rewrite 或反向代理。
+- 沒有目錄列表（directory listing）。
+- `Content-Type` 依副檔名決定，文字類別自動加 `; charset=utf-8`。
+
+<Callout title="SPA 的 deep link">
+沒有 rewrite 規則，所以 `/dashboard` 這種前端路由若沒有對應檔案，會落到 `404.html`（HTTP 狀態仍是 404）。若你的 SPA 需要 deep link，建議在建置時為每個路由輸出對應的 HTML（靜態產生），或在 `404.html` 放入 SPA 入口讓前端接手 —— 但狀態碼不會變成 200。
+</Callout>
+
+### 快取與生效時間
+
+| 檔案類型 | `Cache-Control` |
+|---|---|
+| HTML | `public, max-age=0, must-revalidate` |
+| 其他（CSS / JS / 圖片 / 字型…） | `public, max-age=300` |
+
+- 每個檔案都帶 `ETag`；帶 `If-None-Match` 命中時回 `304`。支援 `HEAD`。
+- 節點快取 TTL 上限為 **60 秒**：部署、rollback 或刪除後，最多 60 秒內全網生效。
+- 錯誤頁（404 / 451 / 503）為 `no-store`，不會被節點快取。
+- 檔案與錯誤頁回應附帶 `X-Content-Type-Options: nosniff` 與 `Referrer-Policy: strict-origin-when-cross-origin`。
+
+### 版本、預覽與 rollback
+
+- 每次上傳都是一筆 deployment，各自有 branch、message、檔案數、大小與 SHA-256。
+- `branch` 等於站台 production branch 的部署，成功後**自動上線**；其他分支只產生預覽版，不會影響正式站。
+- 任何狀態為 `ready` 的 deployment 都可以「activate」重新上線，這就是 rollback / promote；上線前同樣會檢查 100MB 配額。
+- 上線中的 deployment 不可刪除（`409`）；其餘可刪。
+- 每站保留 5 筆，超過時自動刪除最舊且非上線中的版本。
+
+## 七、禁止內容與檢舉
+
+Pages 嚴禁下列內容：
+
+- **釣魚 / 憑證竊取**：偽造登入頁、假表單、誘導輸入密碼 / OTP / 信用卡 / 助記詞；
+- **惡意程式**：病毒、木馬、勒索軟體、挖礦腳本、惡意導向；
+- **品牌冒用**：冒充銀行、支付、雲端、社群平台或任何企業 / 個人；
+- **詐騙與違法內容**：假投資、假客服、兒少剝削、侵權內容等；
+- **濫用平台**：檔案分享、串流來源、攻擊跳板、繞過計量。
+
+### 上傳時的自動掃描
+
+每次部署都會掃描文字類檔案（HTML / JS / CSS / JSON / TXT / SVG，單檔最多讀前 512KB），依訊號加權計分：
+
+| 判定 | 分數 | 行為 |
+|---|---|---|
+| `ok` | < 30 | 正常部署；production branch 自動上線 |
+| `review` | 30–69 | deployment 狀態 `held`，API 回 **202**，**不會服務**；等管理員人工核准。期間舊的上線版本不受影響 |
+| `block` | ≥ 70 | API 回 **422 `pages_content_blocked`**，附 `reasons`；檔案不落地、不保存 |
+
+掃描訊號包含：密碼欄位搭配外部表單 / 外送端點、Telegram Bot / Discord webhook / `formsubmit.co` 等憑證外送、品牌字樣搭配登入欄位、要求 OTP / 身分證 / 信用卡 / 助記詞、空白頁搭配外部轉址、高度混淆程式碼、偽造「帳戶已鎖定」警告等。
+
+此外，slug 另有保留字與品牌黑名單，命中時回 `400 pages_bad_slug`。
+
+### 停用與封禁
+
+- **站台停用**（`suspended`）：該站所有請求回 **451**，顯示違規停用說明；站台不可再部署（`403 pages_site_suspended`）。
+- **帳號封禁 Pages**：該使用者所有站台一併停用，所有 Pages API 回 `403 pages_banned`，且不可再兌換內測碼。
+- 管理員可隨時下架站台、刪除站台或封禁帳號；情節重大或重複違規會直接封禁。
+
+### 檢舉
+
+發現釣魚或惡意 Pages 站台，請到 **[https://cdn.taipei/report-pages](https://cdn.taipei/report-pages)** 填寫檢舉（**不需登入**），或呼叫 `POST /api/pages/report`：
+
+```json
+{
+  "site": "evil-site",
+  "reason": "phishing",
+  "details": "偽造銀行登入頁",
+  "email": "optional@example.com"
+}
+```
+
+- `site` 可填 slug 或完整網址。
+- `reason` 為 `phishing` / `malware` / `illegal` / `other`。
+- `details`、`email` 選填；email 只用於必要時聯絡，不會公開。
+- 每 IP 每小時最多 5 次。
+
+管理員會依檢舉內容審核並採取停用、刪除或封禁。濫用檢舉管道同樣會被限制。
+
+## 八、錯誤碼
+
+所有 Pages API 錯誤格式為 `{ "error": "繁中訊息", "code": "…", … }`。
+
+| HTTP | `code` | 情境與處理 |
+|---|---|---|
+| 401 | — | 未登入或 API key 無效；重新登入或換一把 key |
+| 403 | `pages_beta_required` | 尚未兌換內測碼；先到 Dashboard 或 CLI 兌換 |
+| 403 | `pages_banned` | 帳號被管理員封禁 Pages；申訴請開工單 |
+| 403 | `pages_site_suspended` | 站台已停用，不可再部署；請開工單申訴 |
+| 400 | `pages_bad_archive` | 壓縮檔格式錯誤、損毀、含 symlink 或路徑不合法；重新打包 |
+| 400 | `pages_no_index` | 根目錄缺少 `index.html`；確認打包的是 `dist/` 的內容 |
+| 400 | `pages_bad_slug` | slug 格式錯誤、含 `--`、保留字或品牌字樣；換一個 slug |
+| 400 | `pages_bad_request` | 參數錯誤（缺 slug、branch 格式等）；檢查請求內容 |
+| 400 | `pages_beta_invalid` | 內測碼無效 / 用盡 / 過期 / 停用；確認碼或聯絡管理員 |
+| 404 | `pages_not_found` | 站台或 deployment 不存在，或不屬於目前帳號 |
+| 409 | `pages_slug_taken` | slug 已被其他站台使用；換一個 |
+| 409 | `pages_site_limit` | 已達每人 10 站上限；先刪除不用的站台 |
+| 413 | `pages_site_too_large` | 單站超過 20MB，或壓縮檔超過 25MB；精簡資源或壓縮圖片 |
+| 413 | `pages_quota_exceeded` | 上線後會超過 100MB；回傳 `usedBytes` / `limitBytes`，先刪除舊站或舊版 |
+| 422 | `pages_content_blocked` | 內容掃描判定為釣魚 / 惡意；回傳 `reasons`，請勿重試 |
+| 429 | `pages_rate_limited` | 觸發頻率限制（部署 6 次/分、建站 20 次/時、兌換 10 次/時）；稍後再試 |
+
+網站本身（訪客看到的）狀態：
+
+| HTTP | 情境 |
+|---|---|
+| 200 | 正常 |
+| 304 | `If-None-Match` 命中 |
+| 308 | 目錄缺少結尾斜線，導向 `<path>/` |
+| 400 | 路徑編碼錯誤（`decodeURIComponent` 失敗） |
+| 404 | 站台不存在、尚未部署，或找不到檔案（有 `404.html` 時回傳其內容）；`..`、NUL、反斜線與隱藏路徑亦回 404 |
+| 405 | 只接受 `GET` 與 `HEAD` |
+| 451 | 站台因違規被停用 |
+| 503 | 無套餐 / 套餐過期 / 當月流量超額 / 帳號被封禁 Pages |
+
+## 九、FAQ
+
+### 需要先買套餐嗎？
+
+需要。Pages 容量免費，但**服務需要有效套餐**：沒有套餐、套餐過期或當月流量超過 `bandwidthGbMonth`，站台會回 503。詳見[計費與套餐](/billing)。
+
+### 100MB 是每站還是每人？
+
+每人 100MB，計入的是「所有站台上線中 deployment」的檔案大小總和。單站另有 20MB 上限。舊版與預覽版不計入 100MB，但每站最多保留 5 筆檔案。
+
+### 請求數真的不限嗎？
+
+不限，也不計費；平台仍會記錄 `requests` 供統計與反濫用。流量（位元組）才計入套餐。
+
+### 為什麼部署回 202？
+
+內容掃描判定為 `review`，deployment 進入 `held`，需管理員人工核准後才會上線。期間舊版本照常服務。核准後若為 production branch 會自動上線。
+
+### 為什麼部署回 422？
+
+掃描判定為 `block`（釣魚 / 惡意 / 冒用等），檔案不會保存。請確認內容；誤判可開工單並附上 deployment 時間與 `reasons`。
+
+### 為什麼網站突然變成 503？
+
+依序檢查：套餐是否到期、當月流量是否超額、帳號是否被停用 Pages。升級套餐或等月初重置後會自動恢復，不需重新部署。
+
+### 為什麼網站回 451？
+
+站台被管理員停用（違規或檢舉成立）。請開工單申訴；確認違規時不會恢復。
+
+### 上傳資料夾後網站 404？
+
+最常見原因是把整個資料夾（例如 `dist/`）包進壓縮檔，導致 `index.html` 不在根目錄；或 `index.html` 根本沒被建置出來。請確認壓縮檔開啟後第一層就看到 `index.html`。
+
+### 支援自訂網域嗎？
+
+目前不支援。所有站台都使用 `<slug>.pages.furcdn.top`；自訂網域開放後會另行公告。
+
+### 支援 SPA、SSR 或 API 嗎？
+
+SPA 的靜態產物可以部署，但沒有 rewrite，deep link 需自行輸出對應 HTML（或用 `404.html` 接手，狀態碼仍為 404）。SSR、Functions、Workers、API 一律不支援。
+
+### `_headers` / `_redirects` 為什麼沒作用？
+
+Pages 不支援這兩個 Cloudflare Pages 專有檔案。需要自訂回應標頭或轉址，目前只能靠 HTML meta refresh（不建議）或改由前端處理。
+
+### 部署後多久生效？
+
+最多 60 秒（節點快取 TTL 上限）。HTML 本身設為 `must-revalidate`，一般資源快取 300 秒。
+
+### 刪除站台後流量紀錄會消失嗎？
+
+不會。站台檔案會刪除，但每日流量統計（`PagesDailyStat`）會保留，當月已產生的流量仍計入套餐。
+
+### 可以拿 Pages 當圖床或檔案分享嗎？
+
+不行。Pages 是靜態網站託管，不是檔案分享或串流服務；這類用法會被視為濫用並停用。
