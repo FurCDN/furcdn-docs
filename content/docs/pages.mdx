@@ -295,12 +295,13 @@ Pages 不計算請求次數，但仍受平台可接受使用條款與反濫用�
 
 | 檔案類型 | `Cache-Control` |
 |---|---|
-| HTML | `public, max-age=0, must-revalidate` |
-| 其他（CSS / JS / 圖片 / 字型…） | `public, max-age=300` |
+| HTML | `public, max-age=0, must-revalidate, no-transform` |
+| 其他（CSS / JS / 圖片 / 字型…） | `public, max-age=300, no-transform` |
 
 - 每個檔案都帶 `ETag`；帶 `If-None-Match` 命中時回 `304`。支援 `HEAD`。
 - 節點快取 TTL 上限為 **60 秒**：部署、rollback 或刪除後，最多 60 秒內全網生效。
 - 錯誤頁（404 / 451 / 503）為 `no-store`，不會被節點快取。
+- 所有回應都帶 `no-transform`：你的檔案內容不會被中間層改寫或注入第三方腳本。
 - 檔案與錯誤頁回應附帶 `X-Content-Type-Options: nosniff` 與 `Referrer-Policy: strict-origin-when-cross-origin`。
 
 ### 版本、預覽與 rollback
