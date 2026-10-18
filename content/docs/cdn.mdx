@@ -24,7 +24,32 @@ FurCDN 是一款多節點 CDN 加速平台，支援 HTTP/HTTPS 加速、WAF 防�
 目前不支援 `*.a.com` 這類萬用字元（泛域名），每個子域名都需要單獨接入。
 </Callout>
 
-### 源站設定
+### 切換接入叢集（大陸 / 港日）
+
+已接入的網域可隨時切換叢集：**儀表板 > 域名管理 > 該網域 > 基本設定 > 接入叢集**，選擇方案允許的叢集並確認。切換規則與新增網域相同（可用叢集清單、`maxClusters`、實名要求）。
+
+- 由平台管理的 DNS 別名 `<domain>.<aliyun zone>` 會**自動改指向新叢集**。若你的 CNAME 是設到這個別名，**不需要改 DNS**。
+- 若你當初直接 CNAME 到舊叢集的 CNAME，請自行改成新叢集的 CNAME；`furcdn domain dns-check <domain>` 接受別名或目前叢集的 CNAME。
+- 切換會同時清除舊、新叢集的快取；若啟用 ECH，兩邊的 HTTPS DNS 記錄也會同步。
+
+CLI：
+
+```bash
+furcdn domain update example.com --cluster 3
+```
+
+API（session 鑑權）：
+
+```http
+PUT /api/domains/123
+Content-Type: application/json
+
+{"clusterId": 3}
+```
+
+回應包含 `cluster`（新叢集）、`dnsTarget`、`dnsUpdated`，必要時有 `dnsNote`。切到同一個叢集為 no-op（`dnsUpdated: false`）；`dnsNote: "aliyun_not_configured"` 表示資料庫已切換但別名未更新。切換失敗（例如 DNS 別名更新失敗）會回 502 並還原原叢集，不會留下半套狀態。
+
+
 
 每個域名支援最多 **1 個主源站 + 10 個備份源站**，每個源站獨立設定：
 

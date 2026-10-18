@@ -83,7 +83,7 @@ furcdn domain origin probes example.com
 furcdn domain origin policy set example.com --reset
 ```
 
-完整選項(策略、探測方式、遲滯、每源站權重/備用/探測目標等)與 ICMP 注意事項,見[回源鑑別與源站防護](/docs/origin)的「源站擇優」章節。
+完整選項(策略、探測方式、遲滯、每源站權重/備用/探測目標等)與 ICMP 注意事項,見[回源鑑別與源站防護](/origin)的「源站擇優」章節。
 
 ### `furcdn account`:帳號自助服務
 
@@ -273,7 +273,11 @@ Pages 提供兩組**同形**端點:
 | `/api/v1/pages/**` | API key(`Authorization: Bearer fck_…`) | GitHub Action、CI、腳本 |
 | `/api/pages/**` | Session cookie | Dashboard、CLI 互動登入 |
 
-以下範例都用 `/api/v1/pages`,並以 `$FURCDN_API_KEY` 代表你的 `fck_…` 金鑰。兩組端點的回應格式、錯誤碼與規則完全相同。除了站台概況(`GET /`,未解鎖也可呼叫)與兌換端點,使用前必須先兌換內測碼,否則一律回 `403 pages_beta_required`;帳號被封禁 Pages 時回 `403 pages_banned`。產品規則、配額與檔案限制見 [FurCDN Pages](/pages)。
+以下範例都用 `/api/v1/pages`,並以 `$FURCDN_API_KEY` 代表你的 `fck_…` 金鑰。兩組端點的回應格式、錯誤碼與規則完全相同。除了站台概況(`GET /`,未解鎖也可呼叫)與兌換端點,使用前必須先兌換內測碼,否則一律回 `403 pages_beta_required`;帳號被封禁 Pages 時回 `403 pages_banned`。**建立或編輯含 `pages` 源站的網域**同樣需要解鎖。產品規則、配額與檔案限制見 [FurCDN Pages](/pages)。
+
+<Callout title="Pages 站點沒有公開網址">
+站點只是一種源站(`type: "pages"`);對外網址來自你綁定的網域。API 回應**不含** `url` / `previewUrl`,改為 `domains`(已綁定的網域)。
+</Callout>
 
 ### 站台概況
 
@@ -293,9 +297,8 @@ curl -H "Authorization: Bearer $FURCDN_API_KEY" \
 {
   "unlocked": true,
   "banned": false,
-  "baseDomain": "pages.furcdn.top",
   "quota": {
-    "usedBytes": 0,
+    "usedBytes": 1048576,
     "limitBytes": 104857600,
     "perSiteLimitBytes": 20971520,
     "siteCount": 1,
@@ -305,12 +308,21 @@ curl -H "Authorization: Bearer $FURCDN_API_KEY" \
     {
       "id": 1,
       "slug": "my-site",
-      "url": "https://my-site.pages.furcdn.top",
       "productionBranch": "main",
       "status": "active",
       "suspendedReason": null,
-      "bytes": 0,
+      "bytes": 1048576,
       "activeDeployment": null,
+      "domains": [
+        {
+          "id": 10,
+          "domain": "www.example.com",
+          "clusterId": 3,
+          "clusterName": "香港 / 日本",
+          "cname": "hk.cdn.example.com",
+          "enabled": true
+        }
+      ],
       "createdAt": "2026-10-18T00:00:00.000Z",
       "updatedAt": "2026-10-18T00:00:00.000Z"
     }
@@ -358,7 +370,7 @@ curl -X POST \
   https://cdn.taipei/api/v1/pages/sites
 ```
 
-`productionBranch` 選填,預設 `main`。成功回 **201** `{"site": {…}}`。slug 格式錯誤或命中保留字回 `400 pages_bad_slug`;已被使用回 `409 pages_slug_taken`;達 10 站上限回 `409 pages_site_limit`。建立站台每小時最多 20 次。
+`productionBranch` 選填,預設 `main`。成功回 **201** `{"site": {…}}`。slug 格式錯誤或命中保留字回 `400 pages_bad_slug`;同一帳號已有同名站點回 `409 pages_slug_taken`;達 10 站上限回 `409 pages_site_limit`。建立站台每小時最多 20 次。
 
 ### 站台詳情
 
@@ -367,12 +379,28 @@ curl -H "Authorization: Bearer $FURCDN_API_KEY" \
      https://cdn.taipei/api/v1/pages/sites/my-site
 ```
 
-回 `{"site": {…}, "deployments": [{…}]}`,deployments 由新到舊。`PagesDeploymentJson` 欄位:
+回 `{"site": {…}, "deployments": [{…}]}`,deployments 由新到舊。
+
+`PagesSiteJson` 欄位:
+
+| 欄位 | 說明 |
+|---|---|
+| `id` | 站點 ID |
+| `slug` | 站點代稱(同一帳號內唯一) |
+| `productionBranch` | 生產分支 |
+| `status` | `active` / `suspended` |
+| `suspendedReason` | 停用原因 |
+| `bytes` | 上線中 deployment 的位元組數 |
+| `activeDeployment` | 上線中的 deployment(沒有則 `null`) |
+| `domains` | 已綁定的網域(`PagesBoundDomainJson[]`) |
+| `createdAt` / `updatedAt` | ISO 時間 |
+
+`PagesDeploymentJson` 欄位:
 
 | 欄位 | 說明 |
 |---|---|
 | `id` | deployment ID |
-| `siteSlug` | 站台 slug |
+| `siteSlug` | 站點 slug |
 | `branch` | 分支名稱 |
 | `isProduction` | 建立當下是否為 production branch |
 | `status` | `ready` / `held` / `rejected` |
@@ -382,9 +410,11 @@ curl -H "Authorization: Bearer $FURCDN_API_KEY" \
 | `via` | 來源(`dashboard` / `cli` / `action` / `api`) |
 | `active` | 是否為目前上線版本 |
 | `scanVerdict` / `scanReasons` | 掃描結果(`ok` / `review`)與繁中原因 |
-| `url` | 正式網址,僅 active 有值 |
-| `previewUrl` | 該版本的預覽網址 |
 | `createdAt` | ISO 時間 |
+
+<Callout title="沒有預覽網址">
+`PagesDeploymentJson` 不含 `url` / `previewUrl`。非 production 分支的 deployment 只會儲存,不會上線;需要時用 `activate` 設為上線版本。
+</Callout>
 
 ### 更新站台
 
@@ -406,7 +436,7 @@ curl -X DELETE \
   https://cdn.taipei/api/v1/pages/sites/my-site
 ```
 
-回 `{"ok": true}`,同時刪除所有 deployment 檔案。每日流量統計(`PagesDailyStat`)會保留,當月已產生的流量仍計入套餐。
+回 `{"ok": true}`,同時刪除所有 deployment 檔案。**若仍有網域以 `pages` 源站指向此站點,回 `409 pages_bad_request`** 並列出網域;請先改回 HTTP 源站或刪除網域。每日流量統計(`DailyStat`)會保留,當月已產生的流量仍計入套餐。
 
 ### 部署(deployment)
 
@@ -438,7 +468,7 @@ Query 參數:
 | `message` | 版本說明 |
 | `create` | `1` 時若站台不存在會先建立(同樣檢查 slug、站數與配額) |
 
-成功回 **201** `{"deployment": {…}, "site": {…}}`。`branch` 等於 production branch 時,成功後自動上線;其他分支僅產生預覽版。
+成功回 **201** `{"deployment": {…}, "site": {…}}`。`branch` 等於 production branch 時,成功後自動上線並清除所有綁定網域的快取;其他分支僅儲存,不會上線。
 
 內容掃描判定 `review` 時,deployment 狀態為 `held`,回 **202** `{"deployment": {…}, "site": {…}, "held": true}`,不會服務,等管理員核准;期間舊的上線版本不受影響。判定 `block` 回 **422 `pages_content_blocked`**,附 `reasons: string[]`,檔案不保存。
 
@@ -452,7 +482,7 @@ curl -X POST \
   https://cdn.taipei/api/v1/pages/sites/my-site/deployments/42/activate
 ```
 
-只有 `status=ready` 的 deployment 可以上線,且上線後不得超過 100MB。成功回 `{"site": {…}}`。這就是 rollback(回到舊版)與 promote(把預覽版推上正式)。
+只有 `status=ready` 的 deployment 可以上線,且上線後不得超過 100MB。成功回 `{"site": {…}}`,並自動清除綁定網域的快取。這就是 rollback(回到舊版)與 promote(把非生產版本推上正式)。限速為每分鐘 20 次。
 
 ### 刪除 deployment
 
@@ -464,23 +494,120 @@ curl -X DELETE \
 
 回 `{"ok": true}`。**不能刪除目前上線中的版本**,會回 `409`。每站最多保留 5 筆,超過時系統自動刪除最舊且非上線中的版本。
 
+### 列出已綁定網域
+
+```bash
+curl -H "Authorization: Bearer $FURCDN_API_KEY" \
+     https://cdn.taipei/api/v1/pages/sites/my-site/domains
+```
+
+回 `{"domains": [PagesBoundDomainJson, …]}`:
+
+| 欄位 | 說明 |
+|---|---|
+| `id` | 網域 ID |
+| `domain` | 完整網域 |
+| `clusterId` / `clusterName` | 接入叢集 |
+| `cname` | 要設定的 CNAME 目標 |
+| `enabled` | 網域是否啟用 |
+
+### 綁定網域
+
+```http
+POST /api/v1/pages/sites/my-site/domains
+Authorization: Bearer fck_xxx
+Content-Type: application/json
+
+{"domain": "www.example.com", "clusterId": 3}
+```
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $FURCDN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"domain":"www.example.com","clusterId":3}' \
+  https://cdn.taipei/api/v1/pages/sites/my-site/domains
+```
+
+成功回 **201** `{"domain": {…}, "cname": "…", "site": {…}}`。這支端點走既有「建立網域」邏輯:檢查網域格式、套餐 `maxDomains`、可用叢集與實名要求,建立 `origins = [{type:"pages", pagesSiteId}]` 的網域,並沿用自動 SSL。錯誤原樣透傳既有網域錯誤(例如網域已存在、超過套餐網域數、套餐未含此叢集),沒有 `pages_domain_*` 專屬碼。綁定限速為每小時 30 次。
+
+綁定後可在網域管理切換叢集、設定 SSL / WAF / 快取或刪除網域。
+
+### 切換綁定網域的叢集
+
+綁定後可隨時切換接入叢集(大陸 / 港日),規則與建立網域相同(可用叢集、`maxClusters`、實名要求):
+
+```http
+PUT /api/domains/123
+Cookie: furcdn_token=…
+Content-Type: application/json
+
+{"clusterId": 3}
+```
+
+```bash
+furcdn domain update example.com --cluster 3
+```
+
+回應:
+
+```json
+{
+  "domain": {
+    "id": 123,
+    "clusterId": 3,
+    "cluster": {"id": 3, "name": "香港 / 日本", "cname": "hk.cdn.example.com"},
+    "dnsTarget": "www.example.com.cdn-zone.example.com",
+    "dnsUpdated": true
+  }
+}
+```
+
+- 平台管理的 DNS 別名(`dnsTarget`)會自動改指向新叢集;若使用者的 CNAME 設到這個別名,不需改 DNS。若直接 CNAME 到舊叢集 CNAME,需自行改成新叢集 CNAME。
+- 切到同一個叢集為 no-op(`dnsUpdated: false`,不寫 audit)。
+- `dnsNote: "aliyun_not_configured"` 表示 DB 已切換,但別名未更新(Alibaba DNS 未設定)。
+- 錯誤:400 叢集無效 / 超出套餐可使用叢集數;403 套餐未含此叢集 / 需要實名 / 不是網域擁有者;404 網域不存在;409 併發切換;502 DNS 別名更新失敗(已還原原叢集)。
+- 切換會清除舊、新叢集的快取;若啟用 ECH,兩邊的 HTTPS DNS 記錄也會同步。audit action 為 `domain_switch_cluster`。
+- `GET /api/domains` 已包含 `clusterId`、`cluster`、`clusterCname`、`dnsTarget`;`GET /api/clusters` 回傳方案允許的 `{clusters:[{id,name,cname,region,requireRealName}]}`。
+
+### 把既有網域源站改指到 Pages
+
+`origins` 陣列現在接受 `type: "pages"`。以下為 dashboard / CLI 使用的 session API(`PUT /api/domains/:id`):
+
+```http
+PUT /api/domains/123
+Cookie: furcdn_token=…
+Content-Type: application/json
+
+{
+  "origins": [
+    { "type": "pages", "pagesSite": "my-site" }
+  ]
+}
+```
+
+- 輸入可用 `pagesSite`(slug,限自己的站點)或 `pagesSiteId`。
+- 伺服器驗證站點歸屬、站點狀態與內測解鎖後,正規化為 `{ "type": "pages", "url": "pages://<siteId>", "pagesSiteId": <id>, … }`;輸出與節點設定一律以 `pagesSiteId` 為準。
+- 可保留 HTTP 源站作為備援:`{"origins":[{"type":"pages","pagesSite":"my-site"},{"type":"http","url":"https://origin.example.com","backup":true}]}`。
+- 對應 CLI:`furcdn domain origin set example.com --pages my-site`(加 `--backup` 則附加為備援)。
+
 ### 公開檢舉(免登入)
 
 ```http
 POST /api/pages/report
 Content-Type: application/json
 
-{"site": "evil-site", "reason": "phishing", "details": "偽造銀行登入頁", "email": "optional@example.com"}
+{"target": "www.example.com", "reason": "phishing", "details": "偽造銀行登入頁", "email": "optional@example.com"}
 ```
 
 ```bash
 curl -X POST \
   -H "Content-Type: application/json" \
-  -d '{"site":"evil-site","reason":"phishing","details":"偽造銀行登入頁"}' \
+  -d '{"target":"www.example.com","reason":"phishing","details":"偽造銀行登入頁"}' \
   https://cdn.taipei/api/pages/report
 ```
 
-`site` 可為 slug 或完整網址;`reason` 為 `phishing` / `malware` / `illegal` / `other`;`details`、`email` 選填。回 `{"ok": true}`,每 IP 每小時 5 次。這支端點**不需要 API key**。
+`target` 可為網域或完整 URL;伺服器取 hostname,並比對出背後是否有 Pages 站點(找不到仍會記錄)。`reason` 為 `phishing` / `malware` / `illegal` / `other`;`details`、`email` 選填。回 `{"ok": true}`,每 IP 每小時 5 次。這支端點**不需要 API key**。
 
 ### 錯誤格式
 
@@ -496,16 +623,20 @@ CLI 有 `FURCDN_API_KEY`(或 `furcdn config set-key`)時走 `/api/v1/pages`,否�
 
 | 指令 | 說明 |
 |---|---|
-| `furcdn pages list` | 列出站台與用量 |
+| `furcdn pages list` | 列出站台、用量與已綁網域 |
 | `furcdn pages create <slug>` | 建立站台(可加 `--production-branch` 指定 production branch,預設 `main`) |
 | `furcdn pages deploy <dir> --site <slug>` | 打包目錄成 tar.gz 並部署;支援 `--branch`、`--message`、`--create` |
 | `furcdn pages deployments <slug>` | 列出 deployment(新到舊) |
-| `furcdn pages activate <slug> <id>` | 把指定版本重新上線(rollback / promote) |
+| `furcdn pages activate <slug> <id>` | 把指定版本設為上線版本(rollback / promote) |
 | `furcdn pages rm-deployment <slug> <id>` | 刪除指定版本(不可刪上線中版本;`-y` 略過確認) |
-| `furcdn pages delete <slug>` | 刪除站台(`-y` 略過確認) |
+| `furcdn pages delete <slug>` | 刪除站台(仍有綁定網域時會失敗;`-y` 略過確認) |
 | `furcdn pages usage` | 顯示容量用量、站數與單站上限 |
 | `furcdn pages beta redeem <code>` | 兌換內測碼 |
 | `furcdn pages beta status` | 查詢內測開通狀態 |
+| `furcdn pages domains <slug>` | 列出站台已綁定的網域 |
+| `furcdn pages bind <slug> <domain> --cluster <id>` | 綁定網域;省略 `--cluster` 時 TTY 互動選擇,非 TTY 需明確指定 |
+| `furcdn info clusters` | 查叢集 ID / 名稱 / CNAME / 地區 / 是否需實名 |
+| `furcdn domain origin set <domain> --pages <slug>` | 把既有網域的主源站改指到 Pages(`--backup` 可附加為備援;與 `--url` 互斥) |
 
 `deploy` 會先在本機檢查 20MB、檔案數與根目錄 `index.html`,打包時預設忽略 `.git`、`node_modules`、`.DS_Store`。
 

@@ -1,27 +1,39 @@
 ---
 title: "FurCDN Pages（內測）"
-description: "免費靜態網站託管：每位使用者 100MB、單站 20MB、請求數不限，流量併入套餐月配額。支援 Dashboard、CLI 與 GitHub Action 部署。"
+description: "用自己的網域託管靜態網站：綁定網域、選擇叢集、設定 CNAME 即可上線；100MB / 人、20MB / 站，流量計入套餐。"
 ---
 
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import { Step, Steps } from 'fumadocs-ui/components/steps';
 
-FurCDN Pages 讓你直接把靜態網站（HTML / CSS / JS / 圖片等）上傳到 FurCDN，由邊緣節點直接對外服務，不需要自己維護伺服器、Nginx 或物件儲存。每個站台自動取得 `<slug>.pages.furcdn.top` 網址與 TLS 憑證，部署完成後最多 60 秒內全網生效。
+FurCDN Pages 讓你把自己的靜態網站（HTML / CSS / JS / 圖片等）放上 FurCDN，並用**你自己的網域**對外服務。Pages 站點本身沒有公開網址；它是一種新的**源站類型**（`type: "pages"`）——你把網域綁到站點，或把既有網域的源站改指到站點，訪客就會經過該網域的叢集、TLS、WAF、快取與計量，機制與一般 CDN 網域完全相同。
 
 <Callout title="內測中，需內測碼" type="warn">
-Pages 目前為內測功能，**必須先兌換內測碼**才能使用。內測期間功能、配額與網域規則可能調整，且不提供服務水準保證（SLA）；請勿把 Pages 用在唯一的正式服務上。
+Pages 目前為內測功能，**必須先兌換內測碼**才能使用。內測期間功能、配額與規則可能調整，且不提供服務水準保證（SLA）；請勿把 Pages 用在唯一的正式服務上。
 </Callout>
 
 ## 一、這是什麼
 
+```
+訪客 → 你的網域（CNAME → 叢集）→ FurCDN 節點（WAF / 快取 / TLS）
+                                      └ 源站 type=pages → Pages 站點
+```
+
+Pages 只負責儲存與提供**靜態檔案**；網域、叢集、SSL、WAF、快取、流量統計與套餐限制全部沿用既有 CDN 網域功能。這代表：
+
+- 你要先有（或新綁）一個網域，Pages 才有對外網址。
+- 每個綁定的網域都佔用一個套餐網域額度。
+- 流量計入該網域的統計與你的套餐月流量。
+- 部署新版本後，平台會自動清除所有綁定該站點網域的快取。
+
 | 適合 | 不適合 |
 |---|---|
-| 文件站、部落格、產品介紹頁 | 需要伺服器端邏輯（PHP / Node / Python…） |
+| 有自己網域的文件站、部落格、產品介紹頁 | 需要伺服器端邏輯（PHP / Node / Python…） |
 | 前端框架輸出的靜態檔（Next.js `export`、Vite、Astro…） | 需要資料庫或 API 的動態網站 |
-| 專案展示、活動頁、履歷頁 | 需要自訂網域（目前尚未支援） |
-| 由 CI 自動部署的靜態產物 | 大量檔案或超過 20MB 的站台 |
+| 專案展示、活動頁、履歷頁 | 超過 20MB 或大量檔案的站台 |
+| 由 CI 自動部署、想沿用既有 CDN 網域的靜態產物 | 需要「預覽網址」逐一預覽每筆部署（目前沒有） |
 
-Pages 只提供**靜態檔案**：沒有 SSR、沒有 Functions / Workers、沒有反向代理，也不支援 `_redirects` / `_headers`。你在本機 `build` 出什麼，節點就服務什麼。
+Pages 沒有 SSR、沒有 Functions / Workers、沒有反向代理，也不支援 `_redirects` / `_headers`。你在本機 `build` 出什麼，節點就服務什麼。
 
 ## 二、內測碼與開通
 
@@ -47,6 +59,7 @@ furcdn pages beta status
 - 每使用者、每 IP 每小時最多嘗試 10 次；無效 / 用盡 / 過期 / 停用一律回 `pages_beta_invalid`。
 - 被管理員封禁 Pages 的帳號不可再兌換，所有 Pages API 回 `403 pages_banned`。
 - 未開通時，除了站台概況（供 UI 判斷是否顯示兌換畫面）與兌換端點，其餘 Pages API（含 CLI / GitHub Action / `/api/v1`）一律回 `403 pages_beta_required`。
+- 未開通時，**建立或編輯含 `pages` 源站的網域**也會回 `403 pages_beta_required`。
 
 <Callout title="內測碼遺失或無法兌換">
 請透過[工單](/dashboard/tickets)聯絡管理員，並附上帳號 email 與取得的碼。內測碼無法自行補發。
@@ -54,15 +67,16 @@ furcdn pages beta status
 
 ## 三、配額與計費
 
-Pages 的**容量**免費，**流量**則與你的 FurCDN 套餐共用。
+Pages 的**容量**免費，**流量**則跟著綁定的網域走你的 FurCDN 套餐。
 
 | 項目 | 限制 |
 |---|---|
 | 每位使用者總容量 | **100MB**（所有站台「上線中」deployment 的檔案大小總和） |
 | 單站容量 | **20MB**（單一 deployment 解壓後總和；單一檔案同樣受此限） |
 | 站台數量 | **10 站** / 使用者 |
-| 每月請求數 | **不限**（僅記錄統計，不計費、不設上限） |
-| 流量 | 併入套餐當月流量配額（網域流量 + Pages 流量） |
+| 綁定網域 | 每個網域都佔用套餐的 `maxDomains` 額度，並受可用叢集限制 |
+| 每月請求數 | **不限**（計入該網域既有的請求統計） |
+| 流量 | 計入綁定網域的流量與套餐 `bandwidthGbMonth` |
 | 上傳壓縮檔 | ≤ **25MB** |
 | 單一 deployment 檔案數 | ≤ **2000** |
 | 單一路徑長度 | ≤ **255** 字元 |
@@ -70,47 +84,150 @@ Pages 的**容量**免費，**流量**則與你的 FurCDN 套餐共用。
 
 ### 容量怎麼算
 
-- 只有**目前上線中**的 deployment 計入 100MB；非上線的舊版、預覽版不計入。
+- 只有**目前上線中**的 deployment 計入 100MB；非上線的舊版、備用版本不計入。
 - 每站最多保留 5 筆 deployment 檔案；超過時自動刪除**最舊且非上線中**的那筆。上線中的版本不會被自動刪除，也無法手動刪除。
 - 部署新版本、或把舊版重新上線（rollback）時，若會讓總容量超過 100MB，API 回 `413 pages_quota_exceeded`，並附上 `usedBytes` / `limitBytes`。
 
-### 流量與套餐
+### 流量、套餐與網域限制
 
-Pages 的位元組會與網域流量一起計算：當月用量 = 網域流量（`DailyStat`）+ Pages 流量（`PagesDailyStat`），上限為套餐的 `bandwidthGbMonth`。每月 1 號台灣時間 00:00 重新計算。
+Pages 站點沒有獨立的流量統計，也沒有 Pages 專屬的計費程式碼。綁定後它就是一個普通網域：
 
-以下任一情況，Pages 站台會回 **503「此網站暫時停用」**（與網域超量同一套規則）：
+- 請求數與位元組走該網域的 `TrafficLog` / `DailyStat`，計入你的套餐月流量（`bandwidthGbMonth`）。
+- 沒有有效套餐、套餐過期或當月流量超額時，依**既有網域規則**停用；月初重置後自動恢復。
+- 綁定網域會佔用套餐的 `maxDomains`；超出時無法再綁定。
+- 管理員停用網域（`adminDisabled`）時，Pages 內容同樣停止服務。
+- 站台被停用或帳號被封禁 Pages 時，透過綁定網域存取會回 **451**（詳見[禁止內容與檢舉](#ba-jin-zhi-nei-rong-yu-jian-ju)）。
 
-- 沒有任何有效套餐；
-- 套餐已過期；
-- 當月流量已超過套餐配額（`bandwidthGbMonth` > 0 才限制）；
-- 帳號被管理員封禁 Pages。
-
-補救方式與網域相同：購買 / 續費 / 升級套餐，或等月初自動重置。詳細計費規則見[計費與套餐](/billing)。
+補救方式與一般網域相同：購買 / 續費 / 升級套餐，或等月初自動重置。詳細計費規則見[計費與套餐](/billing)。
 
 <Callout title="請求數不限，但不等於可以濫用">
-Pages 不計算請求次數，但仍受平台可接受使用條款與反濫用機制約束。拿 Pages 當檔案分享站、串流來源或攻擊跳板，會被停用。
+Pages 不計算請求次數上限，但仍受平台可接受使用條款與反濫用機制約束。拿 Pages 當檔案分享站、串流來源或攻擊跳板，會被停用。
 </Callout>
 
-## 四、網域
+## 四、綁定自己的網域
 
-每個站台會拿到兩類網址（`<base>` 目前為 `pages.furcdn.top`）：
+Pages 站點沒有預設網址，必須綁定網域才能上線。綁定動作會用既有的「建立網域」流程：檢查網域格式、套餐網域數、可用叢集與實名要求，並建立 `origins = [{ type: "pages", pagesSiteId }]` 的網域。
 
-| 用途 | 網址 |
-|---|---|
-| 正式（上線中版本） | `https://<slug>.pages.furcdn.top` |
-| 預覽（指定 deployment） | `https://<slug>--<previewKey>.pages.furcdn.top` |
+### Dashboard
 
-- `<slug>` 是站台代稱，長度 3–40，只允許小寫字母、數字與 `-`，且**不可包含 `--`**（`--` 保留給預覽網址分隔）。
-- `www`、`api`、`admin`、`dashboard`、`docs`、`status`、`mail`、`cdn`、`pages` 等保留字，以及 `paypal`、`apple`、`google`、`microsoft`、`alipay`、`wechat`、`bank` 等高風險品牌字樣不可使用（`pages_bad_slug`）。
-- `previewKey` 由系統產生（8 位十六進位），每筆 deployment 一個；預覽網址只服務該站台的 deployment，並附帶 `X-Robots-Tag: noindex`。
-- TLS 由平台提供的萬用字元憑證自動涵蓋，不需自行上傳。
-- **目前不支援自訂網域**（綁定自己的 `example.com` 尚未開放）。
+<Steps>
+  <Step>
+    ### 進入站點
 
-<Callout title="為什麼不是 cdn.taipei 的子網域">
-使用者內容刻意放在獨立的 registrable domain（`pages.furcdn.top`），與主站 `cdn.taipei` 隔離，避免 cookie tossing、同站腳本等跨站風險。這是刻意的設計，目前沒有改用 `*.cdn.taipei` 的計畫。
+    側邊欄「Pages」→ 選擇站點 → 「網域」區塊 → 「綁定網域」。
+  </Step>
+  <Step>
+    ### 輸入網域與叢集
+
+    填寫完整網域（例如 `www.example.com`，不支援萬用字元），並選擇接入叢集：
+
+    - **中國大陸**：訪客主要在中國大陸時選擇。
+    - **香港 / 日本**：訪客在台灣、香港、日本或海外時選擇。
+
+    部分叢集需要實名認證；未完成時無法選用。
+  </Step>
+  <Step>
+    ### 設定 DNS CNAME
+
+    建立後畫面會顯示要設定的 **CNAME 目標**。到你的 DNS 服務商把該網域 CNAME 到這個目標；若網域託管在平台可管理的 zone，系統可能一併建立記錄。
+  </Step>
+  <Step>
+    ### 等待 DNS 與 SSL
+
+    DNS 生效後，系統會自動申請並續約 Let's Encrypt 憑證。之後即可用 `https://www.example.com` 開啟 Pages 內容。
+  </Step>
+</Steps>
+
+### CLI
+
+```bash
+# 查叢集 ID、名稱、CNAME 與是否需要實名
+furcdn info clusters
+
+# 綁定網域（--cluster 省略時，TTY 下會列出可選叢集讓你輸入）
+furcdn pages bind my-site www.example.com --cluster 3
+
+# 列出站點已綁定的網域
+furcdn pages domains my-site
+```
+
+`bind` 成功後會輸出網域、CNAME 目標與站點資訊（加 `--json` 取得機器可讀格式）。非互動環境（CI）必須明確指定 `--cluster <id>`。
+
+### 切換叢集與管理網域
+
+綁定後，該網域就是一般網域，可在 **儀表板 > 網域管理 > 該網域 > 基本設定** 使用既有功能。
+
+**切換接入叢集**：在「接入叢集」卡片選擇方案允許的叢集（大陸 / 港日）並確認。規則與建立網域相同（可用叢集清單、`maxClusters`、實名要求）。切換後：
+
+- 由平台管理的 DNS 別名（`<domain>.<aliyun zone>`）會自動改指向新叢集。若你的 CNAME 是設到這個別名，**不需要改 DNS**。
+- 若你當初直接 CNAME 到舊叢集的 CNAME，請改成新叢集的 CNAME；`furcdn domain dns-check <domain>` 接受別名或目前叢集的 CNAME。
+- 舊、新叢集的快取會一併清除；若啟用 ECH，兩邊的 HTTPS DNS 記錄也會同步。
+
+CLI：
+
+```bash
+furcdn domain update example.com --cluster 3
+```
+
+API：
+
+```http
+PUT /api/domains/123
+Content-Type: application/json
+
+{"clusterId": 3}
+```
+
+回 `{domain:{id,clusterId,cluster:{id,name,cname},dnsTarget,dnsUpdated,dnsNote?}}`。切到同一個叢集是 no-op；DNS 別名更新失敗會回 `502` 並自動還原原叢集，不會留下半套狀態。
+
+其他既有功能（SSL / 強制 HTTPS / HTTP2、WAF、快取規則、快取刷新、流量統計、刪除網域）都在同一頁管理；刪除網域後，Pages 站點就不再透過該網域服務。
+
+同一個 Pages 站點可以綁定多個網域（每個都佔用一個網域額度）；同一個網域也可以同時有 `pages` 與 HTTP 源站（例如 Pages 為主、HTTP 備援）。
+
+## 五、把既有網站源站改指到 Pages
+
+如果網域已經接入 FurCDN（原本回源到自己的伺服器），可以直接把源站改成 Pages 站點，DNS、叢集、SSL、WAF 與快取設定都不用重做。
+
+### Dashboard
+
+**儀表板 > 網域管理 > 編輯網域 > 源站設定**，把來源類型改為「**FurCDN Pages 站點**」，選擇你的站點後儲存。存檔後建議在網域頁面按「立即刷新快取」。
+
+### CLI
+
+```bash
+# 把 example.com 的主源站改成 Pages 站點 my-site
+furcdn domain origin set example.com --pages my-site
+
+# 也可以附加為備援源站（保留原本的 http 主源站）
+furcdn domain origin set example.com --pages my-site --backup
+```
+
+`--pages` 與 `--url` 互斥；其餘 `--weight`、`--probe` 等源站擇優旗標照舊可用。要改回 HTTP 源站，改用 `--url` 即可。
+
+### API
+
+```http
+PUT /api/domains/123
+Cookie: furcdn_token=...
+Content-Type: application/json
+
+{
+  "origins": [
+    { "type": "pages", "pagesSite": "my-site" }
+  ]
+}
+```
+
+- 輸入可用 `pagesSite`（slug，必須是自己的站點）或 `pagesSiteId`。
+- 伺服器會驗證站點歸屬、站點狀態與內測解鎖，並正規化成 `{ "type": "pages", "url": "pages://<siteId>", "pagesSiteId": <id>, ... }`。
+- 輸出（API / 節點設定）一律以 `pagesSiteId` 為準。
+- 可以同時保留 HTTP 源站作為備援，例如 Pages 為主、`http` 為 backup；備援語意與一般源站相同。
+
+<Callout title="站點被刪除或停用">
+站點被管理員刪除後，仍指向它的網域會回 404；站點被停用或擁有者被封禁時回 451。網域本身不會被刪除，請改回 HTTP 源站或改綁其他站點。
 </Callout>
 
-## 五、快速開始
+## 六、快速開始
 
 <Tabs items={['Dashboard', 'CLI', 'GitHub Action']}>
   <Tab value="Dashboard">
@@ -123,7 +240,7 @@ Pages 不計算請求次數，但仍受平台可接受使用條款與反濫用�
       <Step>
         ### 建立站台
 
-        點「建立站台」，填入 slug（例如 `my-site`）與 production branch（預設 `main`）。slug 一經使用即全站唯一，之後不可修改。
+        點「建立站台」，填入 slug（例如 `my-site`）與 production branch（預設 `main`）。slug 在同一帳號內唯一，之後不可修改。
       </Step>
       <Step>
         ### 上傳檔案
@@ -135,14 +252,14 @@ Pages 不計算請求次數，但仍受平台可接受使用條款與反濫用�
         </Callout>
       </Step>
       <Step>
-        ### 完成
+        ### 綁定網域
 
-        部署成功後即可用 `https://<slug>.pages.furcdn.top` 開啟。站台詳情頁可看到 deployment 列表、預覽連結、rollback（重新上線舊版）與刪除。
+        到站點的「網域」區塊綁定網域、選叢集，依畫面設定 CNAME。DNS 生效後即可用你的網域開啟網站。
       </Step>
     </Steps>
   </Tab>
   <Tab value="CLI">
-    Pages 指令需要 `@furcdn/cli` **0.3.0 以上**。
+    Pages 指令需要 `@furcdn/cli` **0.4.0 以上**。
 
     ```bash
     npm install -g @furcdn/cli
@@ -163,19 +280,24 @@ Pages 不計算請求次數，但仍受平台可接受使用條款與反濫用�
 
     # 部署：把 ./dist 的內容打包成 tar.gz 上傳
     furcdn pages deploy ./dist --site my-site --create
+
+    # 綁定網域（先用 info clusters 查叢集 ID）
+    furcdn info clusters
+    furcdn pages bind my-site www.example.com --cluster 3
     ```
 
-    `deploy` 會先在本機檢查 20MB、檔案數與根目錄 `index.html`，再打包成 tar.gz（預設忽略 `.git`、`node_modules`、`.DS_Store`）。指定 `--branch` 時，只有等於 production branch 的部署會自動上線，其餘僅產生預覽版。
+    `deploy` 會先在本機檢查 20MB、檔案數與根目錄 `index.html`，再打包成 tar.gz（預設忽略 `.git`、`node_modules`、`.DS_Store`）。指定 `--branch` 時，只有等於 production branch 的部署會自動上線，其餘僅儲存，可用 `activate` 上線。
 
     ```bash
-    # 部署到非 production 分支 → 只會產生預覽
+    # 部署到非 production 分支 → 只儲存，不會上線
     furcdn pages deploy ./dist --site my-site --branch preview --message "測試新版"
 
-    # 列出站台 / 版本
+    # 列出站台 / 版本 / 已綁網域
     furcdn pages list
     furcdn pages deployments my-site
+    furcdn pages domains my-site
 
-    # Rollback：把指定版本重新上線
+    # Rollback / promote：把指定版本設為上線版本
     furcdn pages activate my-site 42
 
     # 刪除版本 / 刪除站台
@@ -190,7 +312,7 @@ Pages 不計算請求次數，但仍受平台可接受使用條款與反濫用�
     所有 `furcdn pages` 指令都支援 `--json`，適合寫進腳本。完整指令表見[開放 API](/api)。
   </Tab>
   <Tab value="GitHub Action">
-    把 API key 存成 repository secret（例如 `FURCDN_API_KEY`），在建置完成後呼叫 Action：
+    先把 API key 存成 repository secret（例如 `FURCDN_API_KEY`），並在 Dashboard 或 CLI 先綁定網域。之後在建置完成後呼叫 Action：
 
     ```yaml
     name: Deploy Pages
@@ -222,8 +344,6 @@ Pages 不計算請求次數，但仍受平台可接受使用條款與反濫用�
               branch: ${{ github.ref_name }}
               message: ${{ github.event.head_commit.message }}
               create-site: 'true'
-
-          - run: echo "預覽：${{ steps.pages.outputs.preview-url }}"
     ```
 
     參數：
@@ -245,13 +365,15 @@ Pages 不計算請求次數，但仍受平台可接受使用條款與反濫用�
     |---|---|
     | `result` | API 原始 JSON |
     | `deployment-id` | 這次部署的 ID |
-    | `url` | 站台的正式網址 |
-    | `preview-url` | 該版本的預覽網址 |
     | `status` | deployment 狀態（`ready` / `held`；`held` 需管理員核准後才上線） |
+
+    <Callout title="沒有公開網址">
+    Pages 站點沒有預設網址，因此 Action **不再輸出** `url` 或 `preview-url`。網站網址就是你綁定的網域；非 production 分支的部署只會儲存，不會上線。
+    </Callout>
   </Tab>
 </Tabs>
 
-## 六、檔案與路由規則
+## 七、檔案與路由規則
 
 ### 上傳格式
 
@@ -261,7 +383,7 @@ Pages 不計算請求次數，但仍受平台可接受使用條款與反濫用�
 - ZIP（`50 4b 03 04`）→ 視為 zip；
 - 其他 → `400 pages_bad_archive`。
 
-解壓時的安全限制：只接受一般檔案（目錄會略過；遇到 symlink / hardlink / 裝置檔直接拒絕）、解壓後總和 ≤ 20MB、檔案數 ≤ 2000、路徑 ≤ 255 字元，且路徑不得包含 `..`、絕對路徑、NUL 或反斜線。
+解壓時的安全限制：只接受一般檔案（目錄會略過；遇到 symlink / hardlink / 裝置檔直接拒絕）、解壓後總和 ≤ 20MB、檔案數 ≤ 2000、路徑 ≤ 255 字元，且路徑不得包含 `..`、絕對路徑、NUL 或反斜線（接受 `./` 前綴）。
 
 **根目錄必須有 `index.html`**，否則回 `400 pages_no_index`。最外層若只有單一共同目錄（例如 `dist/`），平台**不會**自動剝除，請在打包時就進入該目錄打包內容。
 
@@ -293,26 +415,29 @@ Pages 不計算請求次數，但仍受平台可接受使用條款與反濫用�
 
 ### 快取與生效時間
 
+Pages 回應的 `Cache-Control`：
+
 | 檔案類型 | `Cache-Control` |
 |---|---|
 | HTML | `public, max-age=0, must-revalidate, no-transform` |
 | 其他（CSS / JS / 圖片 / 字型…） | `public, max-age=300, no-transform` |
+| 錯誤頁 | `no-store, no-transform` |
 
 - 每個檔案都帶 `ETag`；帶 `If-None-Match` 命中時回 `304`。支援 `HEAD`。
-- 節點快取 TTL 上限為 **60 秒**：部署、rollback 或刪除後，最多 60 秒內全網生效。
-- 錯誤頁（404 / 451 / 503）為 `no-store`，不會被節點快取。
-- 所有回應都帶 `no-transform`：你的檔案內容不會被中間層改寫或注入第三方腳本。
+- 實際快取行為**完全依該網域的快取設定**（快取開關、規則、TTL、忽略 query string 等），與一般網域相同。
+- 部署、rollback、刪除 deployment、停用站點後，平台會**自動清除所有綁定該站點網域的快取**，新版立即生效；實際生效時間仍受該網域的快取規則與節點行為影響。
 - 檔案與錯誤頁回應附帶 `X-Content-Type-Options: nosniff` 與 `Referrer-Policy: strict-origin-when-cross-origin`。
 
-### 版本、預覽與 rollback
+### 版本、rollback 與刪除
 
 - 每次上傳都是一筆 deployment，各自有 branch、message、檔案數、大小與 SHA-256。
-- `branch` 等於站台 production branch 的部署，成功後**自動上線**；其他分支只產生預覽版，不會影響正式站。
-- 任何狀態為 `ready` 的 deployment 都可以「activate」重新上線，這就是 rollback / promote；上線前同樣會檢查 100MB 配額。
+- `branch` 等於站台 production branch 的部署，成功後**自動上線**；其他分支只儲存，不會上線。
+- 沒有預覽網址。任何狀態為 `ready` 的 deployment 都可以「activate」設為上線版本（rollback / promote）；上線前同樣會檢查 100MB 配額。
 - 上線中的 deployment 不可刪除（`409`）；其餘可刪。
 - 每站保留 5 筆，超過時自動刪除最舊且非上線中的版本。
+- 站點仍有綁定網域時不可刪除（`409 pages_bad_request`，訊息會列出網域）；請先在網域管理改回 HTTP 源站或刪除網域。
 
-## 七、禁止內容與檢舉
+## 八、禁止內容與檢舉
 
 Pages 嚴禁下列內容：
 
@@ -338,31 +463,31 @@ Pages 嚴禁下列內容：
 
 ### 停用與封禁
 
-- **站台停用**（`suspended`）：該站所有請求回 **451**，顯示違規停用說明；站台不可再部署（`403 pages_site_suspended`）。
-- **帳號封禁 Pages**：該使用者所有站台一併停用，所有 Pages API 回 `403 pages_banned`，且不可再兌換內測碼。
-- 管理員可隨時下架站台、刪除站台或封禁帳號；情節重大或重複違規會直接封禁。
+- **站點停用**（`suspended`）：所有綁定該站點的網域回 **451**，顯示違規停用說明；站點不可再部署（`403 pages_site_suspended`）。
+- **帳號封禁 Pages**：該使用者所有站點一併停用，透過綁定網域存取回 **451**，所有 Pages API 回 `403 pages_banned`，且不可再兌換內測碼。
+- 管理員可隨時下架站點、強制刪除站點或封禁帳號；情節重大或重複違規會直接封禁。強制刪除站點後，仍指向它的網域會回 404，請自行改源站或刪除網域。
 
 ### 檢舉
 
-發現釣魚或惡意 Pages 站台，請到 **[https://cdn.taipei/report-pages](https://cdn.taipei/report-pages)** 填寫檢舉（**不需登入**），或呼叫 `POST /api/pages/report`：
+發現釣魚或惡意 Pages 站台，請到 **[https://cdn.taipei/report-pages](https://cdn.taipei/report-pages)** 填寫檢舉（**不需登入**），或呼叫 `POST /api/pages/report`。檢舉請填**網域或完整網址**（Pages 沒有自己的公開網址）：
 
 ```json
 {
-  "site": "evil-site",
+  "target": "www.example.com",
   "reason": "phishing",
   "details": "偽造銀行登入頁",
   "email": "optional@example.com"
 }
 ```
 
-- `site` 可填 slug 或完整網址。
+- `target` 可填網域或 URL；伺服器會取 hostname，並比對出背後是否有 Pages 站點。
 - `reason` 為 `phishing` / `malware` / `illegal` / `other`。
 - `details`、`email` 選填；email 只用於必要時聯絡，不會公開。
 - 每 IP 每小時最多 5 次。
 
 管理員會依檢舉內容審核並採取停用、刪除或封禁。濫用檢舉管道同樣會被限制。
 
-## 八、錯誤碼
+## 九、錯誤碼
 
 所有 Pages API 錯誤格式為 `{ "error": "繁中訊息", "code": "…", … }`。
 
@@ -371,19 +496,24 @@ Pages 嚴禁下列內容：
 | 401 | — | 未登入或 API key 無效；重新登入或換一把 key |
 | 403 | `pages_beta_required` | 尚未兌換內測碼；先到 Dashboard 或 CLI 兌換 |
 | 403 | `pages_banned` | 帳號被管理員封禁 Pages；申訴請開工單 |
-| 403 | `pages_site_suspended` | 站台已停用，不可再部署；請開工單申訴 |
+| 403 | `pages_site_suspended` | 站點已停用，不可再部署；請開工單申訴 |
 | 400 | `pages_bad_archive` | 壓縮檔格式錯誤、損毀、含 symlink 或路徑不合法；重新打包 |
 | 400 | `pages_no_index` | 根目錄缺少 `index.html`；確認打包的是 `dist/` 的內容 |
 | 400 | `pages_bad_slug` | slug 格式錯誤、含 `--`、保留字或品牌字樣；換一個 slug |
-| 400 | `pages_bad_request` | 參數錯誤（缺 slug、branch 格式等）；檢查請求內容 |
+| 400 | `pages_bad_request` | 參數錯誤（缺 slug、branch 格式、來源站缺少站點等）；檢查請求內容 |
 | 400 | `pages_beta_invalid` | 內測碼無效 / 用盡 / 過期 / 停用；確認碼或聯絡管理員 |
-| 404 | `pages_not_found` | 站台或 deployment 不存在，或不屬於目前帳號 |
-| 409 | `pages_slug_taken` | slug 已被其他站台使用；換一個 |
+| 404 | `pages_not_found` | 站點或 deployment 不存在，或不屬於目前帳號 |
+| 409 | `pages_slug_taken` | 你已有同名站點；換一個 slug |
 | 409 | `pages_site_limit` | 已達每人 10 站上限；先刪除不用的站台 |
+| 409 | `pages_bad_request` | 站點仍有綁定網域，不可刪除；請先改回 HTTP 源站或刪除網域 |
 | 413 | `pages_site_too_large` | 單站超過 20MB，或壓縮檔超過 25MB；精簡資源或壓縮圖片 |
 | 413 | `pages_quota_exceeded` | 上線後會超過 100MB；回傳 `usedBytes` / `limitBytes`，先刪除舊站或舊版 |
 | 422 | `pages_content_blocked` | 內容掃描判定為釣魚 / 惡意；回傳 `reasons`，請勿重試 |
-| 429 | `pages_rate_limited` | 觸發頻率限制（部署 6 次/分、建站 20 次/時、兌換 10 次/時）；稍後再試 |
+| 429 | `pages_rate_limited` | 觸發頻率限制（部署 6 次/分、建站 20 次/時、activate 20 次/分、綁定網域 30 次/時）；稍後再試 |
+
+<Callout title="綁定網域的錯誤">
+`POST /sites/:slug/domains` 走既有「建立網域」邏輯，因此網域已存在、超過套餐網域數、套餐未含該叢集、需要實名等錯誤會**原樣透傳既有網域錯誤**，沒有 `pages_domain_*` 專屬碼。請依錯誤訊息處理（或改用網域管理頁）。
+</Callout>
 
 網站本身（訪客看到的）狀態：
 
@@ -393,24 +523,48 @@ Pages 嚴禁下列內容：
 | 304 | `If-None-Match` 命中 |
 | 308 | 目錄缺少結尾斜線，導向 `<path>/` |
 | 400 | 路徑編碼錯誤（`decodeURIComponent` 失敗） |
-| 404 | 站台不存在、尚未部署，或找不到檔案（有 `404.html` 時回傳其內容）；`..`、NUL、反斜線與隱藏路徑亦回 404 |
+| 404 | 站點不存在、尚未部署、找不到檔案（有 `404.html` 時回傳其內容），或站點已被刪除 |
 | 405 | 只接受 `GET` 與 `HEAD` |
-| 451 | 站台因違規被停用 |
-| 503 | 無套餐 / 套餐過期 / 當月流量超額 / 帳號被封禁 Pages |
+| 451 | 站點被停用，或站點擁有者被禁止使用 Pages |
+| 503 | 同時串流請求超過上限（回 `Retry-After: 1`）；稍後重試 |
 
-## 九、FAQ
+## 十、FAQ
 
-### 需要先買套餐嗎？
+### 需要自己的網域嗎？
 
-需要。Pages 容量免費，但**服務需要有效套餐**：沒有套餐、套餐過期或當月流量超過 `bandwidthGbMonth`，站台會回 503。詳見[計費與套餐](/billing)。
+需要。Pages 不提供免費子網域，站點必須綁定你自己的網域才有對外網址。綁定時可選中國大陸或香港 / 日本叢集。
+
+### 可以綁多個網域嗎？
+
+可以。同一個站點可以綁定多個網域，每個網域都佔用套餐的 `maxDomains` 額度，並各自沿用該網域的 SSL、WAF 與快取設定。
+
+### 綁定網域要多久才會生效？
+
+建立網域後依畫面設定 CNAME；DNS 生效後系統會自動申請 SSL。實際時間取決於你的 DNS TTL 與憑證簽發，通常數分鐘到數十分鐘。
+
+### 可以換叢集嗎？
+
+可以。到 **網域管理 > 該網域 > 基本設定 > 接入叢集** 切換，或用 `furcdn domain update <domain> --cluster <id>`。平台管理的 DNS 別名會自動改指向；若你是直接 CNAME 到舊叢集 CNAME，記得改成新叢集的 CNAME（`furcdn domain dns-check` 會告訴你目前是否正確）。
+
+### 為什麼沒有預覽網址？
+
+Pages 站點沒有公開 host，所以每筆 deployment 沒有獨立預覽網址。非 production 分支的部署只會儲存，不會上線；需要時用 `activate` 把它設為上線版本。
+
+### 既有網站要怎麼改指到 Pages？
+
+在網域管理的源站設定把類型改成「FurCDN Pages 站點」並選擇站點，或用 `furcdn domain origin set <domain> --pages <site>`。DNS、叢集、SSL 與 WAF 都不用重做；也可以把 Pages 設為備援，保留原本的 HTTP 源站。
+
+### 流量怎麼算？會另外收費嗎？
+
+不會另外收費。Pages 流量就是綁定網域的流量，計入你的套餐 `bandwidthGbMonth`；請求數不限。容量（100MB / 人、20MB / 站）免費。
+
+### 沒有套餐或套餐過期會怎樣？
+
+依既有網域規則停用（與一般網域相同），續費或升級後恢復；月初也會重置超量狀態。
 
 ### 100MB 是每站還是每人？
 
-每人 100MB，計入的是「所有站台上線中 deployment」的檔案大小總和。單站另有 20MB 上限。舊版與預覽版不計入 100MB，但每站最多保留 5 筆檔案。
-
-### 請求數真的不限嗎？
-
-不限，也不計費；平台仍會記錄 `requests` 供統計與反濫用。流量（位元組）才計入套餐。
+每人 100MB，計入的是「所有站台上線中 deployment」的檔案大小總和。單站另有 20MB 上限。舊版與未上線版本不計入 100MB，但每站最多保留 5 筆檔案。
 
 ### 為什麼部署回 202？
 
@@ -420,21 +574,21 @@ Pages 嚴禁下列內容：
 
 掃描判定為 `block`（釣魚 / 惡意 / 冒用等），檔案不會保存。請確認內容；誤判可開工單並附上 deployment 時間與 `reasons`。
 
-### 為什麼網站突然變成 503？
-
-依序檢查：套餐是否到期、當月流量是否超額、帳號是否被停用 Pages。升級套餐或等月初重置後會自動恢復，不需重新部署。
-
 ### 為什麼網站回 451？
 
-站台被管理員停用（違規或檢舉成立）。請開工單申訴；確認違規時不會恢復。
+站點被管理員停用（違規或檢舉成立），或站點擁有者被封禁 Pages。請開工單申訴；確認違規時不會恢復。網域本身仍在，可改回 HTTP 源站。
 
-### 上傳資料夾後網站 404？
+### 為什麼網站回 404？
 
-最常見原因是把整個資料夾（例如 `dist/`）包進壓縮檔，導致 `index.html` 不在根目錄；或 `index.html` 根本沒被建置出來。請確認壓縮檔開啟後第一層就看到 `index.html`。
+可能是站點尚未部署、沒有上線版本、站點已被刪除，或請求的檔案不存在。先確認站點有 active deployment，且網域的 `pages` 源站指向正確站點。
+
+### 刪除站台時說仍有網域綁定？
+
+站點仍有網域使用 `pages` 源站時不能刪除。請先到網域管理把源站改回 HTTP，或刪除該網域，再刪除站台。
 
 ### 支援自訂網域嗎？
 
-目前不支援。所有站台都使用 `<slug>.pages.furcdn.top`；自訂網域開放後會另行公告。
+Pages 就是用你自己的網域，沒有平台提供的子網域。網域需先完成 DNS CNAME 與 SSL 簽發。
 
 ### 支援 SPA、SSR 或 API 嗎？
 
@@ -446,11 +600,11 @@ Pages 不支援這兩個 Cloudflare Pages 專有檔案。需要自訂回應標�
 
 ### 部署後多久生效？
 
-最多 60 秒（節點快取 TTL 上限）。HTML 本身設為 `must-revalidate`，一般資源快取 300 秒。
+部署、rollback、刪除 deployment 或停用站點後，平台會自動清除所有綁定網域的快取。實際生效時間仍依該網域的快取規則與 TTL；必要時可在網域管理手動刷新快取。
 
 ### 刪除站台後流量紀錄會消失嗎？
 
-不會。站台檔案會刪除，但每日流量統計（`PagesDailyStat`）會保留，當月已產生的流量仍計入套餐。
+不會。站台檔案會刪除，但綁定網域的每日流量統計（`DailyStat`）會保留，當月已產生的流量仍計入套餐。
 
 ### 可以拿 Pages 當圖床或檔案分享嗎？
 
