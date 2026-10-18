@@ -403,13 +403,11 @@ curl -H "Authorization: Bearer $FURCDN_API_KEY" \
 | `siteSlug` | 站點 slug |
 | `branch` | 分支名稱 |
 | `isProduction` | 建立當下是否為 production branch |
-| `status` | `ready` / `held` / `rejected` |
 | `message` | 版本說明 |
 | `files` / `bytes` | 檔案數 / 解壓後總位元組 |
 | `hash` | 上傳封存檔的 SHA-256 |
 | `via` | 來源(`dashboard` / `cli` / `action` / `api`) |
 | `active` | 是否為目前上線版本 |
-| `scanVerdict` / `scanReasons` | 掃描結果(`ok` / `review`)與繁中原因 |
 | `createdAt` | ISO 時間 |
 
 <Callout title="沒有預覽網址">
@@ -470,8 +468,6 @@ Query 參數:
 
 成功回 **201** `{"deployment": {…}, "site": {…}}`。`branch` 等於 production branch 時,成功後自動上線並清除所有綁定網域的快取;其他分支僅儲存,不會上線。
 
-內容掃描判定 `review` 時,deployment 狀態為 `held`,回 **202** `{"deployment": {…}, "site": {…}, "held": true}`,不會服務,等管理員核准;期間舊的上線版本不受影響。判定 `block` 回 **422 `pages_content_blocked`**,附 `reasons: string[]`,檔案不保存。
-
 其他錯誤:超過配額 `413 pages_quota_exceeded`(附 `usedBytes` / `limitBytes`)、單站過大 `413 pages_site_too_large`、缺 index `400 pages_no_index`、站台停用 `403 pages_site_suspended`。部署限速為每使用者每分鐘 6 次。
 
 ### 重新上線(rollback / promote)
@@ -482,7 +478,7 @@ curl -X POST \
   https://cdn.taipei/api/v1/pages/sites/my-site/deployments/42/activate
 ```
 
-只有 `status=ready` 的 deployment 可以上線,且上線後不得超過 100MB。成功回 `{"site": {…}}`,並自動清除綁定網域的快取。這就是 rollback(回到舊版)與 promote(把非生產版本推上正式)。限速為每分鐘 20 次。
+任何已上傳的 deployment 都可以上線,且上線後不得超過 100MB。成功回 `{"site": {…}}`,並自動清除綁定網域的快取。這就是 rollback(回到舊版)與 promote(把非生產版本推上正式)。限速為每分鐘 20 次。
 
 ### 刪除 deployment
 
@@ -612,7 +608,7 @@ curl -X POST \
 ### 錯誤格式
 
 ```json
-{"error": "內容掃描判定為釣魚網站", "code": "pages_content_blocked", "reasons": ["登入表單將憑證送往外部網域"]}
+{"error": "上線後會超過容量上限", "code": "pages_quota_exceeded", "usedBytes": 104857600, "limitBytes": 104857600}
 ```
 
 完整錯誤碼與處理方式見 [FurCDN Pages](/pages)。
@@ -786,7 +782,7 @@ if (!r.ok) throw new Error(await r.text());
 ### ❌ Don't
 
 - ❌ 把金鑰寫進前端 JS(會被 view-source 看到)
-- ❌ 把金鑰存到公開 repo(GitHub 自動掃描會公告洩漏)
+- ❌ 把金鑰存到公開 repo(GitHub 會偵測外洩金鑰並公告)
 - ❌ 多人共用同一把金鑰(出事追責困難)
 - ❌ 金鑰名稱裡寫密碼或敏感字串(列表頁顯示出來)
 

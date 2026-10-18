@@ -365,7 +365,6 @@ Content-Type: application/json
     |---|---|
     | `result` | API 原始 JSON |
     | `deployment-id` | 這次部署的 ID |
-    | `status` | deployment 狀態（`ready` / `held`；`held` 需管理員核准後才上線） |
 
     <Callout title="沒有公開網址">
     Pages 站點沒有預設網址，因此 Action **不再輸出** `url` 或 `preview-url`。網站網址就是你綁定的網域；非 production 分支的部署只會儲存，不會上線。
@@ -432,7 +431,7 @@ Pages 回應的 `Cache-Control`：
 
 - 每次上傳都是一筆 deployment，各自有 branch、message、檔案數、大小與 SHA-256。
 - `branch` 等於站台 production branch 的部署，成功後**自動上線**；其他分支只儲存，不會上線。
-- 沒有預覽網址。任何狀態為 `ready` 的 deployment 都可以「activate」設為上線版本（rollback / promote）；上線前同樣會檢查 100MB 配額。
+- 沒有預覽網址。任何已上傳的 deployment 都可以「activate」設為上線版本（rollback / promote）；上線前同樣會檢查 100MB 配額。
 - 上線中的 deployment 不可刪除（`409`）；其餘可刪。
 - 每站保留 5 筆，超過時自動刪除最舊且非上線中的版本。
 - 站點仍有綁定網域時不可刪除（`409 pages_bad_request`，訊息會列出網域）；請先在網域管理改回 HTTP 源站或刪除網域。
@@ -447,19 +446,7 @@ Pages 嚴禁下列內容：
 - **詐騙與違法內容**：假投資、假客服、兒少剝削、侵權內容等；
 - **濫用平台**：檔案分享、串流來源、攻擊跳板、繞過計量。
 
-### 上傳時的自動掃描
-
-每次部署都會掃描文字類檔案（HTML / JS / CSS / JSON / TXT / SVG，單檔最多讀前 512KB），依訊號加權計分：
-
-| 判定 | 分數 | 行為 |
-|---|---|---|
-| `ok` | < 30 | 正常部署；production branch 自動上線 |
-| `review` | 30–69 | deployment 狀態 `held`，API 回 **202**，**不會服務**；等管理員人工核准。期間舊的上線版本不受影響 |
-| `block` | ≥ 70 | API 回 **422 `pages_content_blocked`**，附 `reasons`；檔案不落地、不保存 |
-
-掃描訊號包含：密碼欄位搭配外部表單 / 外送端點、Telegram Bot / Discord webhook / `formsubmit.co` 等憑證外送、品牌字樣搭配登入欄位、要求 OTP / 身分證 / 信用卡 / 助記詞、空白頁搭配外部轉址、高度混淆程式碼、偽造「帳戶已鎖定」警告等。
-
-此外，slug 另有保留字與品牌黑名單，命中時回 `400 pages_bad_slug`。
+slug 另有保留字與品牌黑名單，命中時回 `400 pages_bad_slug`。
 
 ### 停用與封禁
 
@@ -469,7 +456,7 @@ Pages 嚴禁下列內容：
 
 ### 檢舉
 
-發現釣魚或惡意 Pages 站台，請到 **[https://cdn.taipei/report-pages](https://cdn.taipei/report-pages)** 填寫檢舉（**不需登入**），或呼叫 `POST /api/pages/report`。檢舉請填**網域或完整網址**（Pages 沒有自己的公開網址）：
+發現釣魚或惡意 Pages 站台，請到 **[https://cdn.taipei/report-pages](https://cdn.taipei/report-pages)** 填寫檢舉（**不需登入**，需通過人機驗證），或呼叫 `POST /api/pages/report`。檢舉請填**網域或完整網址**（Pages 沒有自己的公開網址）：
 
 ```json
 {
@@ -508,7 +495,6 @@ Pages 嚴禁下列內容：
 | 409 | `pages_bad_request` | 站點仍有綁定網域，不可刪除；請先改回 HTTP 源站或刪除網域 |
 | 413 | `pages_site_too_large` | 單站超過 20MB，或壓縮檔超過 25MB；精簡資源或壓縮圖片 |
 | 413 | `pages_quota_exceeded` | 上線後會超過 100MB；回傳 `usedBytes` / `limitBytes`，先刪除舊站或舊版 |
-| 422 | `pages_content_blocked` | 內容掃描判定為釣魚 / 惡意；回傳 `reasons`，請勿重試 |
 | 429 | `pages_rate_limited` | 觸發頻率限制（部署 6 次/分、建站 20 次/時、activate 20 次/分、綁定網域 30 次/時）；稍後再試 |
 
 <Callout title="綁定網域的錯誤">
@@ -565,14 +551,6 @@ Pages 站點沒有公開 host，所以每筆 deployment 沒有獨立預覽網址
 ### 100MB 是每站還是每人？
 
 每人 100MB，計入的是「所有站台上線中 deployment」的檔案大小總和。單站另有 20MB 上限。舊版與未上線版本不計入 100MB，但每站最多保留 5 筆檔案。
-
-### 為什麼部署回 202？
-
-內容掃描判定為 `review`，deployment 進入 `held`，需管理員人工核准後才會上線。期間舊版本照常服務。核准後若為 production branch 會自動上線。
-
-### 為什麼部署回 422？
-
-掃描判定為 `block`（釣魚 / 惡意 / 冒用等），檔案不會保存。請確認內容；誤判可開工單並附上 deployment 時間與 `reasons`。
 
 ### 為什麼網站回 451？
 

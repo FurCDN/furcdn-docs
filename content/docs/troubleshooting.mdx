@@ -440,7 +440,7 @@ hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 1. `furcdn domain origin policy get <域名>` —— `strategy` 是不是還是預設的 `failover`?擇優要 `latency` 才會依探測分數選路,`failover` 一律照 `origins` 順序打。
 2. 是不是只有一個**非備用**源站?`backup: true` 的源站只在其他源站全掛時才會被選中。
 3. `furcdn domain origin probes <域名>` —— 有沒有探測分數?有沒有節點把某個源站標成 `失敗`?
-4. 差距是否小於 `switchThresholdMs`(預設 20ms)?遲滯會讓分數接近時維持目前選中的源站,這是刻意設計,不是壞掉(見[源站擇優](/docs/origin))。
+4. 差距是否小於 `switchThresholdMs`(預設 20ms)?遲滯會讓分數接近時維持目前選中的源站,這是刻意設計,不是壞掉(見[源站擇優](https://docs.cdn.taipei/origin))。
 5. 剛改完設定或節點剛啟動時,第一輪探測(預設 15 秒)完成前會先照配置順序走。
 
 **解法**:

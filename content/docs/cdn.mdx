@@ -66,7 +66,7 @@ Content-Type: application/json
 | 延遲偏移 `latencyBiasMs` | 加到擇優分數上的固定偏移（-1000~10000；正值＝懲罰、負值＝偏好） |
 | 不探測 `probeDisabled` | 不對此源站做延遲探測；`latency` 策略下會排在有分數的源站之後 |
 
-多個源站時，可以啟用**源站擇優** —— 讓每個節點從自己的網路位置探測各源站延遲，各自挑出對它最快的源站（策略、探測方式、遲滯與完整選項見[回源鑑別與源站防護](/docs/origin)的「源站擇優」章節）：
+多個源站時，可以啟用**源站擇優** —— 讓每個節點從自己的網路位置探測各源站延遲，各自挑出對它最快的源站（策略、探測方式、遲滯與完整選項見[回源鑑別與源站防護](https://docs.cdn.taipei/origin)的「源站擇優」章節）：
 
 ```bash
 furcdn domain origin policy set example.com --set strategy=latency
