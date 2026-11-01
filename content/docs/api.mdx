@@ -40,20 +40,10 @@ npm install -g @furcdn/cli
 furcdn config set-key fck_xxxxxxxx_xxxxxxxxxxxxxxxxxxxxxxxx
 furcdn domains list
 furcdn domains purge example.com
-furcdn domains purge example.com --url https://example.com/a.css --prefix /static/ --pattern '/assets/*.js'
 furcdn ssl upload example.com --cert fullchain.pem --key privkey.pem
 ```
 
 `domains purge` / `ssl upload` 都接受網域 ID 或網域名稱;加 `--json` 輸出機器可讀格式。設定存在 `~/.config/furcdn/config.json`,也可用 `FURCDN_API_KEY` / `FURCDN_API_BASE` 環境變數覆蓋。
-
-`domains purge` 的選擇性參數(`--url` / `--prefix` / `--pattern` 可重複、可混用):
-
-| 參數 | 說明 |
-|---|---|
-| `--url <url>` | 精確 URL,可重複 |
-| `--prefix <path>` | 目錄前綴,可重複 |
-| `--pattern <glob>` | 路徑萬用字元(`*` 匹配任意字元含 `/`),可重複 |
-| `--all` | 清整個域名(預設;不能與上面三個同時用) |
 
 ### 登入(OAuth device flow)
 

@@ -320,11 +320,6 @@ Session 版端點 `POST /api/domains/{id}/purge`(dashboard 與 CLI 登入模式)
 
 其他入口吃同樣的選擇器:
 
-```bash
-furcdn domains purge example.com --url https://example.com/a.css --prefix /static/ --pattern '/assets/*.js'
-```
-
-- **CLI**:`--url` / `--prefix` / `--pattern`(可重複、可混用),`--all` 清全域名
 - **GitHub Action**:`urls` / `prefixes` / `patterns` 三個 input,一行一筆
 - **SDK**:Go `PurgeCacheWith(ctx, id, PurgeOptions{URLs, Prefixes, Patterns})`、Java / Kotlin `purgeCache(id, PurgeOptions(...))`
 
