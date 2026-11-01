@@ -103,21 +103,9 @@ TTL 與「不快取」設定只在**節點回源抓取內容時**套用;已經�
 
 ---
 
-## 二、兩級快取原理
+## 二、快取儲存與命中流程
 
-### L1:記憶體(In-Memory)
-
-- 小檔(`<8 MiB`)優先存記憶體
-- LRU 淘汰
-- 命中速度 `<1ms`
-- 節點重啟即清空
-
-### L2:磁碟(Disk)
-
-- 大檔或 L1 miss 時落盤
-- 單域名 / 單節點都有上限
-- 命中速度 ~5ms
-- 重啟保留
+快取存在**每個節點自己的磁碟**上(節點之間不共享),單域名與整個節點都有容量上限,超過時淘汰最久沒被存取的 entry。節點重啟後磁碟上的快取仍在。
 
 ### 命中流程
 
@@ -126,24 +114,24 @@ TTL 與「不快取」設定只在**節點回源抓取內容時**套用;已經�
   ↓
 WAF 評估 (allow/block/challenge)
   ↓
-查 L1 → 命中?→ 是,X-Cache: HIT-L1 直接返回
-              ↓ 否
-查 L2 → 命中?→ 是,X-Cache: HIT-L2 + 寫入 L1 → 返回
-              ↓ 否
-回源 → X-Cache: MISS,寫 L1+L2 → 返回
+GET / HEAD 且沒有 Authorization / 非挑戰用 Cookie / 客戶端 no-cache?
+  ├ 否 → 直接回源,不讀也不寫快取
+  ↓ 是
+磁碟有未過期的 entry? → 是:X-Cache: HIT,直接返回
+  ↓ 否
+回源 → X-Cache: MISS;符合快取條件就同時寫入磁碟
 ```
+
+同一個快取鍵同時有大量 MISS 時,節點只讓一個請求回源,其餘請求等它寫完後直接 HIT,不會一擁而上打源站。
 
 ### Response Headers
 
 | Header | 含義 |
 |---|---|
-| `X-Cache: HIT-L1` | 命中記憶體 |
-| `X-Cache: HIT-L2` | 命中磁碟 |
-| `X-Cache: MISS` | 未命中,剛從源站回 |
-| `X-Cache: BYPASS` | 命中但配置不快取(TTL=0) |
+| `X-Cache: HIT` | 命中節點磁碟快取 |
+| `X-Cache: MISS` | 這次是從源站取的(包含「不可快取所以每次都回源」的請求) |
+| `X-Cache-TTL: <秒>` | 僅 HIT 時出現:這份快取還剩多少秒過期 |
 | `X-Cache-Node: <name>` | 哪個節點服務了這個請求 |
-| `X-Cache-Age: <秒>` | 已快取多久 |
-| `X-Cache-Key: <hash>` | 本次的快取鍵 hash(debug 用) |
 
 ---
 
@@ -222,19 +210,25 @@ SHA256(method + host + uri + query + cacheKeyHeaders 們的值)
 | `public, max-age=3600` | 快取 1 小時 |
 | `private` | **不快取**(個人資料,不應在 CDN) |
 | `no-store` | **不快取** |
-| `no-cache` | 允許快取但每次回源 revalidate(目前簡化:仍按 TTL 快取) |
-| `s-maxage=600, max-age=60` | CDN 快 10 分鐘(`s-maxage` 給共享快取) |
+| `no-cache` | **不快取**(節點目前沒有條件式重新驗證,所以 `no-cache` 等同每次回源) |
+| `s-maxage=600, max-age=60` | 以 `s-maxage` 為準(給共享快取用);`max-age` 只在沒有 `s-maxage` 時才參考 |
+
+另外這幾種回應**一律不快取**:帶 `Set-Cookie` 的回應、`Vary` 含 `*` 或含「不在 `cacheKeyHeaders` 內」的 header(`Accept-Encoding` 除外)的回應;帶 `Authorization` 或一般 Cookie 的請求、以及客戶端自己送 `Cache-Control: no-cache` / `no-store` / `max-age=0` 的請求,會直接繞過快取。
 
 ### 規則 vs 源站 優先級
 
 ```
-1. 規則 ttl > 0   → 強制用規則的 TTL,完全覆寫源站
-2. 規則 ttl = 0   → 強制不快取(BYPASS)
-3. 沒規則匹配     → 看域名 cacheTime(預設快取時間)
-4. cacheTime = 0  → 看源站 Cache-Control;源站沒設則不快取
+1. 規則 ttl = 0   → 不快取,每次回源(源站怎麼寫都沒用)
+2. 規則 ttl > 0   → 以規則 TTL 為上限;源站的 s-maxage / max-age 比它短時採用較短者,
+                    源站寫 private / no-store / no-cache 則不快取
+3. 沒規則匹配     → 先看節點內建規則(圖片/CSS/JS/字體 7 天、html 5 分鐘、/api/* 不快取),
+                    都沒中才用域名 cacheTime(預設快取時間)
+4. cacheTime = 0  → 不快取
+
+404 回應固定只快取 30 秒;但規則明確寫 `ttl=0` 時,404 也不快取。
 ```
 
-實踐:**寫規則時要意識到完全覆寫源站**。
+實踐:**規則決定「最長快取多久」,源站只能讓它更短,不能讓它更長**;要延長就必須寫規則。
 
 另外,只有**命中且勝出**的那條規則的 `cacheControl` 會寫進回應;沒命中的規則不影響回應。
 
@@ -264,8 +258,8 @@ SHA256(method + host + uri + query + cacheKeyHeaders 們的值)
 
 - 一次最多 **100 筆**(URL + 前綴 + 萬用字元合計),每筆最長 **2048 字元**
 - 「全部」不能跟其他 Tab 一起填(後端回 400)
-- master 透過 SSE 即時廣播給所有服務該域名的節點,通常 `<1 秒` 生效
-- 每個節點清掉命中項目的 L1 + L2 entry
+- master 直接向所有服務該域名的在線節點發出清除請求,通常 `<1 秒` 生效
+- 每個節點刪除命中的磁碟 entry
 
 ### API
 
@@ -419,12 +413,12 @@ OSS 內容不變,**極長 TTL**。配合 `ignoreQueryString=true` + presigned UR
 
 ```json
 [
-  { "name": "影片不上記憶體", "matchType": "extension", "matchValue": "mp4,webm,mov,mkv", "ttl": 86400, "cacheControl": "public, max-age=86400", "priority": 10, "enabled": true },
+  { "name": "影片 1 天", "matchType": "extension", "matchValue": "mp4,webm,mov,mkv", "ttl": 86400, "cacheControl": "public, max-age=86400", "priority": 10, "enabled": true },
   { "name": "音訊 1 週", "matchType": "extension", "matchValue": "mp3,m4a,ogg,flac", "ttl": 604800, "priority": 10, "enabled": true }
 ]
 ```
 
-> 大檔(`>8 MiB`)會自動只進 L2 不進 L1,規則不用特別寫。
+> 大檔同樣直接寫入磁碟,沒有大小上限,只受單域名與節點的容量上限約束。
 
 ### 7.8 規則精修:特定文件覆蓋通用規則
 

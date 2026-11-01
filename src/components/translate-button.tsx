@@ -2,7 +2,7 @@
 
 import { ChevronDown } from 'lucide-react';
 import { usePathname } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useSyncExternalStore } from 'react';
 import { buttonVariants } from 'fumadocs-ui/components/ui/button';
 import {
   Popover,
@@ -108,23 +108,31 @@ function FlagIcon({ code, className }: { code: string; className?: string }) {
   );
 }
 
-function detectCurrent(): LangOption {
-  if (typeof window === 'undefined') return LANGUAGES[0];
+// 目前語言取決於 window.location（外部狀態），用 useSyncExternalStore 讀取：
+// SSR / hydration 階段固定回原文，客戶端立即以真實網址校正，不需要在 effect 內 setState。
+// 路由切換會讓元件重新 render，快照隨之重新讀取，所以不需要訂閱任何事件。
+function subscribeNoop(): () => void {
+  return () => {};
+}
+
+function currentLangCode(): string {
   if (window.location.hostname.endsWith('.translate.goog')) {
     const tl = new URLSearchParams(window.location.search).get('_x_tr_tl');
-    return LANGUAGES.find((l) => l.code === tl) ?? LANGUAGES[0];
+    const match = LANGUAGES.find((l) => l.code === tl);
+    if (match) return match.code;
   }
-  return LANGUAGES[0];
+  return SOURCE_LANG;
+}
+
+function sourceLangCode(): string {
+  return SOURCE_LANG;
 }
 
 export function TranslateButton({ className }: { className?: string }) {
   const pathname = usePathname();
-  const [current, setCurrent] = useState<LangOption>(LANGUAGES[0]);
+  const currentCode = useSyncExternalStore(subscribeNoop, currentLangCode, sourceLangCode);
+  const current = LANGUAGES.find((l) => l.code === currentCode) ?? LANGUAGES[0];
   const origin = typeof window !== 'undefined' ? window.location.origin : siteUrl;
-
-  useEffect(() => {
-    setCurrent(detectCurrent());
-  }, [pathname]);
 
   return (
     <Popover>

@@ -137,7 +137,7 @@ hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 
 **排查**:
 
-1. 查當前快取的 TTL(`X-Cache-Age` header)
+1. 查當前快取的剩餘 TTL(回應的 `X-Cache-TTL` header,只有 `X-Cache: HIT` 才有)
 2. 規則 TTL 設了多久?
 
 **解法**:
@@ -159,7 +159,7 @@ hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 
 ### Q9. 設了不快取規則還是命中快取
 
-**症狀**:新增了 `ttl=0` 的規則(例如 `path=/api/`),但訪問日誌還是 `X-Cache: HIT-L1` / `HIT-L2`,拿到的仍是舊內容。
+**症狀**:新增了 `ttl=0` 的規則(例如 `path=/api/`),但回應還是 `X-Cache: HIT`,拿到的仍是舊內容。
 
 **原因**:規則只在**節點回源抓取內容時**套用。已經快取的 entry 不會因為你新增或修改規則而消失,它會一路活到原本的 TTL 到期。
 
@@ -402,7 +402,7 @@ hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 **排查**:
 
 1. **訪客瀏覽器**自己的快取(基於 response 的 Cache-Control / ETag),CDN purge 不影響
-2. SSE 廣播時節點離線
+2. 清除請求送達時該節點離線
 3. 是不是只刷了部分路徑?選擇性刷新只清命中的項目,沒命中的照樣是舊的
 
 **解法**:
@@ -410,7 +410,7 @@ hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 - 提示訪客強制刷新(Ctrl+Shift+R / Cmd+Shift+R)
 - 或改規則的 `cacheControl` 縮短瀏覽器端 max-age
 - 已知是某幾條路徑出錯時,改用「指定 URL / 目錄前綴 / 萬用字元」再刷一次,並看 API 回應的 `removed`:`removed` 是 0 通常代表沒命中 —— 多半是 URL 少了 query、前綴少了結尾 `/`,或 host 不是這個域名(見[刷新快取](/cache#purge))
-- 等下次 SSE 重連節點會自動拉最新 config(但**舊 cache entry 不會被清**,需手動再 purge 一次)
+- 節點離線期間漏掉的清除不會補發:節點恢復後**舊 cache entry 還在**,需要再 purge 一次
 
 ### Q25. 跨叢集域名遷移
 
