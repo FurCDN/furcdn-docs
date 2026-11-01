@@ -287,8 +287,10 @@ curl -X POST -H "Authorization: Bearer $FURCDN_API_KEY" -H "Content-Type: applic
 
 - `mode`:`all` / `selective`
 - `total` = 服務該域名的在線節點數
-- `success` = 有回應的節點數
-- `removed` = 刪掉的快取 entry 數,跨節點累加(同一 URL 在 3 個節點都有快取就算 3);只有 `selective` 會出現
+- `success` = 確認清除成功的節點數；選擇性刷新必須回傳合法的刪除數量，只有 HTTP 200 不算
+- `removed` = 成功節點刪掉的快取 entry 數，跨節點累加（同一 URL 在 3 個節點都有快取就算 3）；只有 `selective` 且至少一個節點成功時會出現。部分失敗時只包含成功節點；沒有回報的數量是未知，不能當成 0
+
+`ok:true` 代表請求已處理，**不代表所有節點成功**。請檢查 `total > 0` 且 `success === total`；`success < total` 時顯示部分失敗，`total === 0` 時沒有節點執行清除。
 
 錯誤:
 

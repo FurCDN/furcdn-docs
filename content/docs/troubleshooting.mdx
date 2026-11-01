@@ -171,7 +171,7 @@ hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 
 **解法**:
 
-- 改完規則**一定要刷新**:全站用「全部」,只有那幾條路徑就用「指定 URL / 目錄前綴 / 萬用字元」(見[刷新快取](/cache#purge))
+- 改完規則**一定要刷新**：全站用「整個域名」，只有那幾條路徑就切到「指定內容」，填入 URL／目錄前綴／萬用字元（見[刷新快取](/cache#purge)）
 - 把 `ttl=0` 的規則 `priority` 調小,排到更寬的規則前面;或把重疊的規則拆成互不重疊的 `path`
 
 ---
@@ -409,7 +409,7 @@ hostOverride: bucket-xxx.oss-cn-hongkong.aliyuncs.com
 
 - 提示訪客強制刷新(Ctrl+Shift+R / Cmd+Shift+R)
 - 或改規則的 `cacheControl` 縮短瀏覽器端 max-age
-- 已知是某幾條路徑出錯時,改用「指定 URL / 目錄前綴 / 萬用字元」再刷一次,並看 API 回應的 `removed`:`removed` 是 0 通常代表沒命中 —— 多半是 URL 少了 query、前綴少了結尾 `/`,或 host 不是這個域名(見[刷新快取](/cache#purge))
+- 已知是某幾條路徑出錯時，改用「指定內容」再刷一次。先確認 `total > 0` 且 `success === total`，此時 `removed:0` 才代表沒有刪除 entry；部分失敗只計成功節點，缺少回報則筆數未知。URL 的 query 也要一致，主機名不符會回 400（見[刷新快取](/cache#purge)）。
 - 節點離線期間漏掉的清除不會補發:節點恢復後**舊 cache entry 還在**,需要再 purge 一次
 
 ### Q25. 跨叢集域名遷移
