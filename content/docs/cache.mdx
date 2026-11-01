@@ -66,24 +66,40 @@ description: "從原理到實踐,把 FurCDN 快取調到極致;附 JSON 模式�
 | `matchValue` | string | matchType≠all 必填 | — | 匹配值,語意依 `matchType` 而定(≤500 字) |
 | `ttl` | int 0–315360000 | ✓ | — | 秒。`0` = 不快取;最大 10 年 |
 | `cacheControl` | string | | `null` | 自訂回應的 `Cache-Control`,**覆寫源站**;留空 = 透傳源站(≤200 字) |
-| `priority` | int ≥0 | | 10 | 數字小的優先匹配 |
+| `priority` | int ≥0 | | 10 | 數字小的先評估;第一條命中的規則生效,同 `priority` 時**較早建立的規則**勝出。`0` 是合法值(不會被改成 10) |
 | `enabled` | bool | | true | `false` 視為規則不存在 |
 
 ### `matchType` × `matchValue`
 
 | matchType | matchValue 格式 | 範例 |
 |---|---|---|
-| `extension` | 副檔名清單,逗號分隔(可帶 `.` 也可不帶) | `jpg,png,webp` / `.jpg,.png` |
-| `path` | 路徑前綴或含 `*` 萬用 | `/static/` / `/api/v2/*` |
-| `contentType` | 回應 Content-Type 字首萬用 | `image/*` / `application/json` |
+| `extension` | 副檔名清單,逗號分隔;帶不帶前導 `.` 都可以(`js` 等同 `.js`) | `jpg,png,webp` / `.jpg,.png` |
+| `path` | 含 `*` → 對路徑做 glob(`*` 匹配任意字元,含 `/`);否則 → 路徑**前綴**;單獨一個 `/` 只匹配根路徑 `/` | `/static/` / `/api/v2/*` / `/` |
+| `contentType` | 對回應的 `Content-Type` 匹配,`; charset=…` 參數會被忽略;可含 `*` 萬用 | `image/*` / `application/json` |
 | `all` | (不需 matchValue) | 命中該域名所有請求 |
 
-> `extension` 取 URL 路徑最後一個 `.` 之後的部分(不含 query)。如 `/img/cat.jpg?v=2` → 副檔名 `jpg`。
+逐條講清楚:
+
+- **`extension`**:取 URL 路徑**最後一個** `.` 之後的部分(不含 query),只比對最終副檔名。如 `/img/cat.jpg?v=2` → `jpg`;`js` 與 `.js` 寫法等價。
+- **`path`**:值裡有 `*` 就當 glob,例:`/assets/*.js`、`/img/*`(`*` 可以跨過 `/`);沒有 `*` 就是**字串前綴**,`/api/` 命中 `/api/x/y`,但 `/api` 不會命中 `/apis`;值剛好是 `/` 時**只**匹配根路徑 `/`,不再被當成「所有路徑的前綴」。
+- **`contentType`**:比對回應標頭 `Content-Type`,`; charset=utf-8` 這類參數不參與比對。
+
+### 匹配順序與 `cacheControl`
+
+1. 同一域名下所有 `enabled` 的規則按 `priority` 由小到大排,`priority` 相同時**較早建立的規則**在前。
+2. **第一條命中的規則就決定結果**,後面的規則不再評估。
+3. 只有這條勝出規則的 `ttl` 與 `cacheControl` 會套用到回應;其他「也匹配」的規則不會疊加、也不會部分生效。
 
 ### 後端去重
 
 同一域名下 `(matchType, matchValue)` 完全相同會被拒(回 409)。
-要對同一目標有不同行為,改 `priority` 是錯的做法 — 應該用 `path` + 更精準的萬用值。
+要對同一目標有不同行為,靠調 `priority` 硬排是錯的做法 —— 重疊的規則只有第一條會生效,排序一動結果就變;而且 `(matchType, matchValue)` 一樣根本存不進去。
+正確做法是用更精準的 `matchType` / `matchValue` 把目標拆成**互不重疊**的規則(例如用 `path` 指定明確路徑,而不是再開一條更寬的 `extension` 去跟它搶)。
+
+<Callout title="規則只在節點回源時生效" type="warn">
+TTL 與「不快取」設定只在**節點回源抓取內容時**套用;已經快取的內容不會因為你改了規則而消失。
+改完規則後請到 [刷新快取](#purge) 刷新對應路徑,否則訪客在舊 TTL 到期前還是會看到舊內容。
+</Callout>
 
 ---
 
@@ -220,20 +236,106 @@ SHA256(method + host + uri + query + cacheKeyHeaders 們的值)
 
 實踐:**寫規則時要意識到完全覆寫源站**。
 
+另外,只有**命中且勝出**的那條規則的 `cacheControl` 會寫進回應;沒命中的規則不影響回應。
+
 ---
 
-## 六、立即刷新
+## 六、刷新快取 [#purge]
 
-域名編輯 > **「立即刷新快取」按鈕**。
+規則的 TTL / 不快取設定**只在節點回源抓內容時**套用;已經快取的內容不會因為改了規則而消失。要讓規則變更立刻被看到,就得**刷新(purge)**對應的路徑。
 
-- master 透過 SSE 即時廣播給所有服務該域名的節點
-- 每個節點同時清 L1 + L2 該域名所有 entry
-- 通常 `<1 秒` 生效
-- 是**全域名 purge**,不能精確到單一 URL
-- API 等價:`POST /api/v1/domains/{id}/purge`
+刷新 = 把節點上已存的 entry 刪掉,下一個請求重新回源。兩種範圍:
 
-> 不要過度刷新。每次刷新後該域名所有節點全部 MISS,源站瞬時負載 ↑。
-> 真要頻繁更新建議改 TTL 短一點,而不是手動刷新。
+| 範圍 | 說明 |
+|---|---|
+| 全域名 | 清掉該域名所有快取(舊行為,完全相容) |
+| 選擇性 | 只清指定 URL / 目錄前綴 / 萬用字元命中的 entry |
+
+### 儀表板
+
+**域名編輯 > 「立即刷新緩存」**,現在會開啟一個對話框,用 Tab 選範圍:
+
+| Tab | 填什麼 | 一行一筆的範例 |
+|---|---|---|
+| 全部 | 不用填 | — |
+| 指定 URL | 完整 URL 或以 `/` 開頭的路徑 | `https://example.com/a.css?v=1` |
+| 目錄前綴 | 路徑前綴 | `/static/` |
+| 萬用字元 | 路徑 glob,`*` 匹配任意字元(含 `/`) | `/assets/*.js` |
+
+- 一次最多 **100 筆**(URL + 前綴 + 萬用字元合計),每筆最長 **2048 字元**
+- 「全部」不能跟其他 Tab 一起填(後端回 400)
+- master 透過 SSE 即時廣播給所有服務該域名的節點,通常 `<1 秒` 生效
+- 每個節點清掉命中項目的 L1 + L2 entry
+
+### API
+
+`POST /api/v1/domains/{id}/purge`,body 可以整包省略:
+
+```bash
+# 全域名刷新(等同舊行為,現有腳本不用改)
+curl -X POST -H "Authorization: Bearer $FURCDN_API_KEY" \
+  https://cdn.taipei/api/v1/domains/123/purge
+
+# 指定 URL
+curl -X POST -H "Authorization: Bearer $FURCDN_API_KEY" -H "Content-Type: application/json" \
+  -d '{"urls": ["https://example.com/a.css?v=1", "/b.js"]}' \
+  https://cdn.taipei/api/v1/domains/123/purge
+
+# 目錄前綴
+curl -X POST -H "Authorization: Bearer $FURCDN_API_KEY" -H "Content-Type: application/json" \
+  -d '{"prefixes": ["/static/"]}' \
+  https://cdn.taipei/api/v1/domains/123/purge
+
+# 萬用字元
+curl -X POST -H "Authorization: Bearer $FURCDN_API_KEY" -H "Content-Type: application/json" \
+  -d '{"patterns": ["/assets/*.js"]}' \
+  https://cdn.taipei/api/v1/domains/123/purge
+```
+
+三種選擇器可以**混用**(取聯集),但 `{"all": true}` 不能跟它們同時出現:
+
+```bash
+curl -X POST -H "Authorization: Bearer $FURCDN_API_KEY" -H "Content-Type: application/json" \
+  -d '{"urls": ["/index.html"], "prefixes": ["/static/"], "patterns": ["/img/*"]}' \
+  https://cdn.taipei/api/v1/domains/123/purge
+```
+
+| 選擇器 | 語意 |
+|---|---|
+| `urls` | 精確 URL。可寫完整 URL(host 必須等於該域名,否則 400)或以 `/` 開頭的 path。**query 算在匹配內**:`/a.css` 不會刷掉 `/a.css?v=1`;域名開了 `ignoreQueryString` 時才忽略 query。同一 URL 的所有快取變體(Vary 副本、GET 與 HEAD)一起清掉 |
+| `prefixes` | 對路徑做純字串前綴比對,query 不參與。`/static/` 會清掉 `/static/a.js`、`/static/x/y.css`。也接受完整 URL 形式(只取路徑,host 同樣要等於該域名) |
+| `patterns` | 對路徑做 glob,`*` 匹配任意字元(含 `/`),query 不參與,必須以 `/` 開頭。如 `/assets/*.js`、`/img/*` |
+
+回應:
+
+```json
+{"ok": true, "mode": "all", "total": 5, "success": 5}
+{"ok": true, "mode": "selective", "total": 5, "success": 5, "removed": 12}
+```
+
+- `mode`:`all`(全域名)/ `selective`(選擇性)
+- `total`:服務該域名的在線節點數
+- `success`:有回應的節點數
+- `removed`:刪掉的快取 entry 數,跨節點累加(同一 URL 在 3 個節點都有快取就算 3);只有 `selective` 會出現
+
+錯誤:`400` body 不合法(有 body 但沒有 all/urls/prefixes/patterns、`all` 與其他選擇器混用、host 不符、超過 100 筆、單筆超過 2048 字元、非字串…)、`401` 金鑰無效、`403` 域名不是你的、`429` 限速。格式一律 `{"error": "<訊息>"}`。
+
+限速:全域名 **10 次 / 5 分鐘 / user**;選擇性 **60 次 / 5 分鐘 / user**。
+
+Session 版端點 `POST /api/domains/{id}/purge`(dashboard 與 CLI 登入模式)body 完全相同,回應多一個 `message` 字串。完整規格見[開放 API](/api#purge)。
+
+其他入口吃同樣的選擇器:
+
+```bash
+furcdn domains purge example.com --url https://example.com/a.css --prefix /static/ --pattern '/assets/*.js'
+```
+
+- **CLI**:`--url` / `--prefix` / `--pattern`(可重複、可混用),`--all` 清全域名
+- **GitHub Action**:`urls` / `prefixes` / `patterns` 三個 input,一行一筆
+- **SDK**:Go `PurgeCacheWith(ctx, id, PurgeOptions{URLs, Prefixes, Patterns})`、Java / Kotlin `purgeCache(id, PurgeOptions(...))`
+
+> 不要過度刷新。全域名刷新後該域名所有節點全部 MISS,源站瞬時負載 ↑。
+> 真要頻繁更新,把 TTL 改短,或者用選擇性刷新只清變動的那幾條路徑。
 
 ---
 
@@ -256,13 +358,15 @@ SHA256(method + host + uri + query + cacheKeyHeaders 們的值)
 
 ```json
 [
-  { "name": "index.html 短 TTL", "matchType": "path", "matchValue": "/", "ttl": 300, "priority": 10, "enabled": true },
+  { "name": "首頁短 TTL", "matchType": "path", "matchValue": "/", "ttl": 300, "priority": 10, "enabled": true },
   { "name": "構建產物長 TTL", "matchType": "path", "matchValue": "/static/", "ttl": 2592000, "priority": 10, "enabled": true },
   { "name": "API 不快取", "matchType": "path", "matchValue": "/api/", "ttl": 0, "priority": 5, "enabled": true }
 ]
 ```
 
 SPA 的 `index.html` 必須短 TTL,構建產物用 hash filename 可放長 TTL。
+
+> `path=/` 現在**只**匹配根路徑 `/`,不是「全部路徑」;SPA 的深層路徑(如 `/about`)不會命中它,那些由域名 `cacheTime` 決定,或另外補一條 `extension: html` 規則。這份配方裡 `/`(10)、`/static/`(10)、`/api/`(5)三者互不重疊,行為確定。
 
 ### 7.3 WordPress / 動態 CMS
 
@@ -292,12 +396,14 @@ OSS 內容不變,**極長 TTL**。配合 `ignoreQueryString=true` + presigned UR
 [
   { "name": "首頁 1 分鐘", "matchType": "path", "matchValue": "/", "ttl": 60, "priority": 10, "enabled": true },
   { "name": "文章 10 分鐘", "matchType": "path", "matchValue": "/news/", "ttl": 600, "priority": 10, "enabled": true },
-  { "name": "圖片 1 天", "matchType": "extension", "matchValue": "jpg,png,webp", "ttl": 86400, "priority": 10, "enabled": true },
+  { "name": "圖片 1 天", "matchType": "extension", "matchValue": "jpg,png,webp", "ttl": 86400, "priority": 6, "enabled": true },
   { "name": "API 不快取", "matchType": "path", "matchValue": "/api/", "ttl": 0, "priority": 5, "enabled": true }
 ]
 ```
 
-兼顧即時性 + 性能,配合「立即刷新」應對重大新聞。
+圖片規則用 `priority: 6`:排在 `/news/` 前綴(10)之前(否則新聞配圖會先被 `/news/` 命中,只拿到 10 分鐘),但仍排在「API 不快取」(5)之後(`/api/` 底下的圖也必須回源)。
+
+兼顧即時性 + 性能,配合[選擇性刷新](#purge)應對重大新聞(只刷被改動的那幾條路徑,不用全站清空)。
 
 ### 7.6 多語言網站
 
@@ -361,7 +467,8 @@ OSS 內容不變,**極長 TTL**。配合 `ignoreQueryString=true` + presigned UR
 
 1. 該路徑有規則 ttl > 0 嗎?改成 0
 2. 登入態頁面應該有 `Cache-Control: private`,源站沒設就加規則 ttl=0
-3. **緊急刷快取**:點「立即刷新」
+3. **緊急刷快取**:點「立即刷新緩存」;只有少數路徑中標時,用「指定 URL / 目錄前綴」只刷那幾條(見[刷新快取](#purge))
+4. 改完規則**一定要刷新**對應路徑,規則不會回頭動已快取的內容
 
 ### 多語言頁面只看到一種語言
 
@@ -370,7 +477,7 @@ OSS 內容不變,**極長 TTL**。配合 `ignoreQueryString=true` + presigned UR
 
 ### 改了源站但 CDN 還是舊內容
 
-- TTL 還沒到 → 等 / 點「立即刷新」
+- TTL 還沒到 → 等,或直接刷新那幾條 URL / 前綴(見[刷新快取](#purge))
 - 規則 `cacheControl` 設了長 max-age 也覆寫到 response,**用戶端瀏覽器**也快取了
 - 改規則的 cacheControl,新請求才會拿短 max-age;舊請求等舊 max-age 過期
 

@@ -16,6 +16,14 @@ description: "平台對外開放的 HTTP API,用於程式化控制 CDN(部署管
 
 三個 SDK 都實作了:列域名 / 刷快取 / 上傳憑證。Java、Kotlin 透過 [JitPack](https://jitpack.io) 安裝,完整 Gradle / Maven 範例見各倉庫 README。
 
+刷快取都支援「全域名」與「選擇性」兩種呼叫;選擇性透過 `PurgeOptions` 傳:
+
+- **Go**:`PurgeCacheWith(ctx, id, PurgeOptions{URLs: ..., Prefixes: ..., Patterns: ...})`
+- **Java**:`purgeCache(id, purgeOptions)`
+- **Kotlin**:`purgeCache(id, PurgeOptions(urls = listOf("/a.css"), prefixes = listOf("/static/"), patterns = listOf("/assets/*.js")))`
+
+三個欄位都留空(或不傳)就是舊行為 —— 清整個域名。選擇器的語意與下方[刷新快取](#purge)端點一致。
+
 ## 官方 CLI
 
 [FurCDN/furcdn-cli](https://github.com/FurCDN/furcdn-cli) —— 命令列工具,涵蓋 API key 精簡版端點,也涵蓋登入後的完整版網域/帳務管理。
@@ -32,10 +40,20 @@ npm install -g @furcdn/cli
 furcdn config set-key fck_xxxxxxxx_xxxxxxxxxxxxxxxxxxxxxxxx
 furcdn domains list
 furcdn domains purge example.com
+furcdn domains purge example.com --url https://example.com/a.css --prefix /static/ --pattern '/assets/*.js'
 furcdn ssl upload example.com --cert fullchain.pem --key privkey.pem
 ```
 
 `domains purge` / `ssl upload` 都接受網域 ID 或網域名稱;加 `--json` 輸出機器可讀格式。設定存在 `~/.config/furcdn/config.json`,也可用 `FURCDN_API_KEY` / `FURCDN_API_BASE` 環境變數覆蓋。
+
+`domains purge` 的選擇性參數(`--url` / `--prefix` / `--pattern` 可重複、可混用):
+
+| 參數 | 說明 |
+|---|---|
+| `--url <url>` | 精確 URL,可重複 |
+| `--prefix <path>` | 目錄前綴,可重複 |
+| `--pattern <glob>` | 路徑萬用字元(`*` 匹配任意字元含 `/`),可重複 |
+| `--all` | 清整個域名(預設;不能與上面三個同時用) |
 
 ### 登入(OAuth device flow)
 
@@ -99,7 +117,16 @@ furcdn domain origin policy set example.com --reset
     action: purge
     api-key: ${{ secrets.FURCDN_API_KEY }}
     domain-id: 123
+    urls: |
+      https://example.com/a.css
+      /b.js
+    prefixes: |
+      /static/
+    patterns: |
+      /assets/*.js
 ```
+
+`purge` 的 `urls` / `prefixes` / `patterns` 三個 input 都是**一行一筆**;三個都不給就是清整個域名,行為與舊版完全相同。
 
 支援 `purge`(刷快取)、`upload-ssl`(上傳憑證)與 `pages-deploy`(部署 Pages 靜態站)三個動作,完整參數見[倉庫 README](https://github.com/FurCDN/github-action)。`pages-deploy` 的 `site`/`dir`/`branch`/`message`/`create-site` 參數與輸出見 [FurCDN Pages](/pages)。
 
@@ -209,28 +236,84 @@ Authorization: Bearer fck_xxx
 
 ---
 
-### 刷新快取
+### 刷新快取 [#purge]
 
 ```http
 POST /api/v1/domains/{id}/purge
 Authorization: Bearer fck_xxx
+Content-Type: application/json   # 省略 body 時可整行不帶
 ```
 
-廣播到該域名所屬叢集**所有在線節點**清 L1+L2 快取。等同 dashboard 的「立即刷新快取」按鈕。
+廣播到該域名所屬叢集**所有在線節點**清 L1+L2 快取。等同 dashboard 的「立即刷新緩存」按鈕。
 
-返回:
+**body 是選填的 JSON**。不帶 body、空 body、或 `{"all": true}` 都是清整個域名(舊行為,現有呼叫端不用改):
+
+```bash
+# 全域名
+curl -X POST -H "Authorization: Bearer $FURCDN_API_KEY" \
+  https://cdn.taipei/api/v1/domains/123/purge
+
+# 選擇性
+curl -X POST -H "Authorization: Bearer $FURCDN_API_KEY" -H "Content-Type: application/json" \
+  -d '{"urls": ["https://example.com/a.css?v=1", "/b.js"], "prefixes": ["/static/"], "patterns": ["/assets/*.js"]}' \
+  https://cdn.taipei/api/v1/domains/123/purge
+```
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| `all` | bool | `true` = 清整個域名。**不能**與下面三個欄位同時出現(400) |
+| `urls` | string[] | 精確 URL。每筆是完整 URL(host 必須等於該域名,否則 400)或以 `/` 開頭的路徑。query 算在匹配內(`/a.css` 不會刷掉 `/a.css?v=1`),域名開了 `ignoreQueryString` 時才忽略。同一 URL 的所有變體(Vary 副本、GET 與 HEAD)一起清掉 |
+| `prefixes` | string[] | 對路徑做字串前綴比對,query 不參與。`/static/` 命中 `/static/a.js`、`/static/x/y.css`。也接受完整 URL(只取路徑,host 同樣要等於該域名) |
+| `patterns` | string[] | 對路徑做 glob,`*` 匹配任意字元(含 `/`),query 不參與,必須以 `/` 開頭。如 `/assets/*.js`、`/img/*` |
+
+`urls` / `prefixes` / `patterns` 可以同一個請求裡混用(取聯集 / OR)。
+
+限制:
+
+- 三者**合計最多 100 筆**
+- 每筆最長 **2048 字元**,必須是非空字串
+- 有 body 但 `all` / `urls` / `prefixes` / `patterns` 一個都沒有 → 400
+
+返回(`mode` 告訴你這次是哪種刷新):
 
 ```json
 {
   "ok": true,
+  "mode": "all",
   "total": 5,
   "success": 5
 }
 ```
 
-`total` = 應通知節點數;`success` = 實際成功節點數。
+```json
+{
+  "ok": true,
+  "mode": "selective",
+  "total": 5,
+  "success": 5,
+  "removed": 12
+}
+```
 
-**限速**:每 user 每 5 分鐘 10 次 + 每 IP 每 5 分鐘 30 次(與 dashboard 共用 key)。
+- `mode`:`all` / `selective`
+- `total` = 服務該域名的在線節點數
+- `success` = 有回應的節點數
+- `removed` = 刪掉的快取 entry 數,跨節點累加(同一 URL 在 3 個節點都有快取就算 3);只有 `selective` 會出現
+
+錯誤:
+
+| code | 情境 |
+|---|---|
+| 400 | body 不合法(沒有選擇器、`all` 與其他選擇器混用、URL host 不符、超過 100 筆、單筆超過 2048 字元、型別不對) |
+| 401 | 金鑰無效 / 過期 |
+| 403 | 域名不是你的 |
+| 429 | 限速觸發 |
+
+錯誤格式 `{"error": "<訊息>"}`。
+
+**限速**:全域名每 user 每 5 分鐘 10 次(另加每 IP 每 5 分鐘 30 次);選擇性每 user 每 5 分鐘 60 次。與 dashboard 共用 key。
+
+Session 鑑權的孿生端點 `POST /api/domains/{id}/purge`(dashboard / CLI 登入模式)body 完全相同,回應多一個 `message` 字串。語意與限制見[快取深度指南](/cache#purge)。
 
 ---
 
@@ -644,13 +727,14 @@ CLI 有 `FURCDN_API_KEY`(或 `furcdn config set-key`)時走 `/api/v1/pages`,否�
 
 | 端點 | 限速 |
 |---|---|
-| `POST /api/v1/domains/{id}/purge` | 10/5min/user + 30/5min/IP |
+| `POST /api/v1/domains/{id}/purge`(全域名) | 10/5min/user + 30/5min/IP |
+| `POST /api/v1/domains/{id}/purge`(選擇性) | 60/5min/user |
 | `POST /api/v1/domains/{id}/ssl` | 6/h/user(防爆破) |
 | `GET /api/v1/*` | 600/min/user |
 
 ### 為什麼跨入口共用 key
 
-`purge` 操作的限速 key 是 `purge:<userId>`,**dashboard 與 API 共用**:
+全域名刷新的限速 key 是 `purge:<userId>`,**dashboard 與 API 共用**:
 
 - 防止使用者透過 API 繞過 dashboard 的限速
 - 帳戶級別防濫用,而不是「按入口分流」
@@ -725,6 +809,20 @@ jobs:
 
 `FURCDN_KEY` 存 GitHub Secrets,**不要寫進 repo**。
 
+上面的寫法清整個域名。若只改了 `index.html` 與建置產物,只刷那幾條路徑可以少打源站:
+
+```yaml
+      - name: Purge changed paths
+        env:
+          FURCDN_KEY: ${{ secrets.FURCDN_KEY }}
+        run: |
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $FURCDN_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"urls":["/index.html"],"prefixes":["/static/"],"patterns":["/assets/*.js"]}' \
+            https://cdn.taipei/api/v1/domains/123/purge
+```
+
 ### Let's Encrypt 自動上傳
 
 cron 每月跑一次,從本地 ACME 客戶端拿到新憑證後上傳:
@@ -742,14 +840,23 @@ curl -fsS -X POST \
   https://cdn.taipei/api/v1/domains/$DOMAIN_ID/ssl
 ```
 
-### Python 一行刷快取
+### Python 刷快取
 
 ```python
 import requests
 
+# 全域名
 requests.post(
     f"https://cdn.taipei/api/v1/domains/{DOMAIN_ID}/purge",
     headers={"Authorization": f"Bearer {FURCDN_KEY}"},
+    timeout=10,
+).raise_for_status()
+
+# 選擇性
+requests.post(
+    f"https://cdn.taipei/api/v1/domains/{DOMAIN_ID}/purge",
+    headers={"Authorization": f"Bearer {FURCDN_KEY}"},
+    json={"urls": ["/index.html"], "prefixes": ["/static/"], "patterns": ["/assets/*.js"]},
     timeout=10,
 ).raise_for_status()
 ```
@@ -815,6 +922,7 @@ if (!r.ok) throw new Error(await r.text());
 |---|---|---|
 | `/api/v1/*` | API key (Bearer) | **對外開放 API**(本文檔) |
 | `/api/dashboard/*`,`/api/user/*`,`/api/admin/*` | JWT cookie | dashboard 前端內部 ajax,**不對外** |
+| `/api/domains/*` | JWT cookie | dashboard / CLI 登入模式的網域管理 API(含 `POST /api/domains/{id}/purge`) |
 | `/api/node/*` | NODE_TOKEN (Bearer) | 節點上報 / 拉 config(節點專用) |
 | `/api/pay/*` | RSA 簽名 | 支付平台 callback |
 | `/api/acme/*` | 公開 | Let's Encrypt 驗證 |
